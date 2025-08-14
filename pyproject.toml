@@ -46,6 +46,10 @@ dev = [
 [project.scripts]
 archi3d = "archi3d.cli:app"
 
+# This new section explicitly tells the build system where to find the package.
+[tool.hatch.build.targets.wheel]
+packages = ["archi3d"]
+
 [tool.black]
 line-length = 100
 target-version = ["py311"]
