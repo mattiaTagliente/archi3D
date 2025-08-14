@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 import requests
 import fal_client
-from .base import ModelAdapter, Token, ExecResult, AdapterTransientError, AdapterPermanentError
+from archi3d.adapters.base import ModelAdapter, Token, ExecResult, AdapterTransientError, AdapterPermanentError
 
 def _write_line(fp: Path, msg: str) -> None:
     fp.parent.mkdir(parents=True, exist_ok=True)
@@ -17,7 +17,7 @@ class TrellisMultiAdapter(ModelAdapter):
     def _upload_images(self, abs_image_paths: List[Path]) -> List[str]:
         urls: List[str] = []
         for p in abs_image_paths:
-            urls.append(fal_client.upload_file(str(p)))
+            urls.append(fal_client.upload_file(p))
         return urls
 
     def _download_glb(self, url: str, out_path: Path) -> None:
@@ -33,10 +33,10 @@ class TrellisMultiAdapter(ModelAdapter):
         algo_cfg = self.cfg  # already resolved to the specific key
         log_file = self.logs_dir / f"{token.product_id}_{token.algo}_{token.job_id}.log"
 
-        # 1) Resolve absolute image paths (workspace is the root). PRD guarantees relpaths prefixed with 'dataset/'. :contentReference[oaicite:12]{index=12}
+        # 1) Resolve absolute image paths (workspace is the root). PRD guarantees relpaths prefixed with 'dataset/'.
         abs_paths = [self.workspace / rel for rel in token.image_files]
 
-        # 2) Upload images to fal CDN (approved). :contentReference[oaicite:13]{index=13}
+        # 2) Upload images to fal CDN (approved).
         start_upload = time.monotonic()
         image_urls = self._upload_images(abs_paths)
         upload_s = time.monotonic() - start_upload
@@ -53,13 +53,14 @@ class TrellisMultiAdapter(ModelAdapter):
 
         def on_queue_update(update):
             if isinstance(update, fal_client.InProgress):
-                for log in update.logs:
-                    if "message" in log:
-                        _write_line(log_file, log["message"])
+                if update.logs:
+                    for log in update.logs:
+                        if "message" in log:
+                            _write_line(log_file, log["message"])
 
         def _runner():
             try:
-                # API & fields per provider docs: model_mesh.url + timings. :contentReference[oaicite:14]{index=14}
+                # API & fields per provider docs: model_mesh.url + timings.
                 res = fal_client.subscribe(endpoint, arguments=defaults, with_logs=True, on_queue_update=on_queue_update)
                 result_container.update(res if isinstance(res, dict) else {"_raw": res})
             except BaseException as e:  # capture for main thread
@@ -86,7 +87,7 @@ class TrellisMultiAdapter(ModelAdapter):
 
         # 5) Download GLB to outputs dir
         glb_url = mesh["url"]
-        # PRD naming/location: runs/<run_id>/outputs/<algo>/<core>.glb – worker provides the exact path; we just write into it. :contentReference[oaicite:15]{index=15}
+        # PRD naming/location: runs/<run_id>/outputs/<algo>/<core>.glb – worker provides the exact path; we just write into it.
         # The worker will pass us the destination path; here we return only metadata; the worker handles the final path write.
         # However, to keep adapter self-contained, we download to a provided path later in worker.materialize() style.
         # For this implementation, return the URL; worker will call _download_glb().
