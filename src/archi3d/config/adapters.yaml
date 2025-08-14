@@ -24,3 +24,13 @@ adapters:
       pbr: true          # as requested
       texture: "HD"      # as requested
       # all other options left to provider defaults
+  rodin_multi:
+    endpoint: "fal-ai/hyper3d/rodin"
+    unit_price_usd: 0.40
+    price_source: "fal.ai 2025-08 list"
+    defaults:
+      condition_mode: "concat"   # approved
+      material: "PBR"            # approved
+      quality: "high"            # approved
+      # geometry_file_format left to default "glb"
+      # seed omitted -> provider default
