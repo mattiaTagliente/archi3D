@@ -14,9 +14,17 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import pandas as pd
+import requests
 from filelock import FileLock
 
 from archi3d import __version__
+from archi3d.adapters.base import (
+    AdapterPermanentError,
+    AdapterTransientError,
+    Token,
+)
+from archi3d.adapters.registry import REGISTRY
+from archi3d.config.adapters_cfg import load_adapters_cfg
 from archi3d.config.paths import PathResolver
 # Import the canonical function from batch.py
 from archi3d.orchestrator.batch import _compose_job_id
@@ -43,11 +51,17 @@ class ExecResult:
     output_glb_relpath: str
     worker: str
     error_msg: str
+    lpips: Optional[float]
+    fscore: Optional[float]
+    unit_price_usd: float
+    estimated_cost_usd: float
+    price_source: str
 
 
 # ---------------------------
 # Utilities
 # ---------------------------
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -76,7 +90,7 @@ def _derive_variant_slug(product_id: str, first_image_rel: str) -> str:
                 f"Could not derive variant slug: path '{first_image_rel}' has fewer than 2 parts."
             )
             return ""
-        
+
         folder_name = p.parts[1]  # dataset/<folder_name>/images/...
 
     except IndexError:
@@ -84,7 +98,7 @@ def _derive_variant_slug(product_id: str, first_image_rel: str) -> str:
         logging.warning(
             f"Could not derive variant slug from path '{first_image_rel}'. "
             "Path structure is not as expected ('dataset/<folder>/...').",
-            exc_info=True, # exc_info=True adds the traceback to the log
+            exc_info=True,  # exc_info=True adds the traceback to the log
         )
         return ""
 
@@ -132,7 +146,7 @@ def _rename_atomic(p: Path, new_suffix: str) -> Path:
     return target
 
 
-def _writerow_locked(paths: PathResolver, row: ExecResult) -> None:
+def _writerow_locked(paths: PathResolver, row: dict) -> None:
     """
     Append (by read-append-write) under a filesystem lock for safety across machines.
     """
@@ -142,13 +156,13 @@ def _writerow_locked(paths: PathResolver, row: ExecResult) -> None:
         if paths.results_parquet.exists() and paths.results_parquet.stat().st_size > 0:
             df = pd.read_parquet(paths.results_parquet)
             # Create a DataFrame for the new row
-            new_row_df = pd.DataFrame([asdict(row)])
+            new_row_df = pd.DataFrame([row])
             # Concatenate the existing DataFrame with the new row
             df = pd.concat([df, new_row_df], ignore_index=True)
         else:
             # If the file doesn't exist or is empty, create a new DataFrame from the first row
-            df = pd.DataFrame([asdict(row)])
-        
+            df = pd.DataFrame([row])
+
         df.to_parquet(paths.results_parquet, index=False)
 
 
@@ -192,6 +206,7 @@ def _compose_output_names(
 # Public API
 # ---------------------------
 
+
 def run_worker(
     run_id: str,
     algo: str,
@@ -216,6 +231,10 @@ def run_worker(
     worker_id = os.environ.get("ARCHI3D_WORKER_ID") or getpass.getuser()
     processed = 0
 
+    repo_root = Path(__file__).resolve().parents[2]
+    ADAPTERS_CFG = load_adapters_cfg(repo_root).get("adapters", {})
+    workspace = paths.workspace_root
+
     for todo in tokens:
         if processed >= limit:
             break
@@ -227,30 +246,29 @@ def run_worker(
             # Another worker grabbed it
             continue
 
-        started = time.perf_counter()
-        started_at = _now_iso()
         error_msg = ""
         status = "completed"
         output_rel = ""
-        
+
         # Initialize variables for the error block
-        job_id, product_id, variant, image_files = "", "", "", []
+        job_id, product_id, variant, image_files, img_suffixes = "", "", "", [], ""
 
         try:
-            token = json.loads(inprog.read_text(encoding="utf-8"))
-            job_id: str = token["job_id"]
-            product_id: str = token["product_id"]
-            variant: str = token.get("variant", "")
-            image_files: List[str] = list(token.get("image_files", []))
-            
+            token_json = json.loads(inprog.read_text(encoding="utf-8"))
+            job_id: str = token_json["job_id"]
+            product_id: str = token_json["product_id"]
+            variant: str = token_json.get("variant", "")
+            image_files: List[str] = list(token_json.get("image_files", []))
+            img_suffixes: str = token_json.get("img_suffixes", "")
+
             # --- JOB ID INTEGRITY CHECK ---
             image_csv = ",".join(image_files)
             # Re-compute the job ID using the exact same function and data
             expected_job_id = _compose_job_id(
-                algo=token["algo"],
+                algo=token_json["algo"],
                 product_id=product_id,
                 variant=variant,
-                image_csv=image_csv
+                image_csv=image_csv,
             )
 
             if job_id != expected_job_id:
@@ -261,16 +279,15 @@ def run_worker(
             # --- END OF CHECK ---
 
             job_id8 = job_id[:8]
-            image_set = ",".join(image_files)
             n_images = len(image_files)
 
             # Derive variant from dataset folder name of first image
-            variant_slug = _derive_variant_slug(product_id, image_files[0]) if image_files else ""
-            img_suffixes = _img_suffixes_from_list(image_files)
+            variant_slug = (
+                _derive_variant_slug(product_id, image_files[0]) if image_files else ""
+            )
 
             # Compose output names & paths
-            outputs_dir = paths.outputs_dir(run_id, algo=algo)
-            glb_name, json_name = _compose_output_names(
+            glb_name, _ = _compose_output_names(
                 run_id=run_id,
                 algo=algo,
                 product_id=product_id,
@@ -279,50 +296,109 @@ def run_worker(
                 img_suffixes=img_suffixes,
                 job_id8=job_id8,
             )
-            glb_path = outputs_dir / glb_name
-            metrics_path = paths.metrics_dir(run_id) / json_name
 
-            # ---- STUB EXECUTION: create placeholder GLB file ----
-            glb_path.parent.mkdir(parents=True, exist_ok=True)
-            glb_path.touch(exist_ok=True)
-            output_rel = str(paths.rel_to_workspace(glb_path).as_posix())
+            out_dir = paths.outputs_dir(run_id, algo=algo)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_glb = out_dir / glb_name
 
-            # Create metrics sidecar placeholder (nulls)
-            metrics_payload = {
-                "job_id": job_id,
-                "lpips": None,
-                "fscore": None,
-                "computed_at": None,
-                "algo": algo,
-                "product_id": product_id,
-                "image_suffixes": img_suffixes,
-                "n_images": n_images,
-                "run_id": run_id,
-                "code_version": __version__,
-            }
-            metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+            # Logs directory
+            logs_dir = paths.run_dir(run_id) / "logs" / algo
+            logs_dir.mkdir(parents=True, exist_ok=True)
 
-            finished_at = _now_iso()
-            duration_s = round(time.perf_counter() - started, 6)
+            # Adapter resolution
+            AdapterCls = REGISTRY.get(algo)
+            if AdapterCls is None:
+                status = "failed"
+                error_msg = f"unknown_adapter: No adapter registered for {algo}"
+                raise RuntimeError(error_msg)
+
+            # Build token object
+            tok = Token(
+                run_id=run_id,
+                algo=algo,
+                product_id=token_json["product_id"],
+                variant=token_json.get("variant", ""),
+                image_files=token_json["image_files"],
+                img_suffixes=token_json.get("img_suffixes", ""),
+                job_id=token_json["job_id"],
+            )
+
+            # Merge adapter cfg for this algo key
+            algo_cfg = ADAPTERS_CFG.get(algo, {})
+            adapter = AdapterCls(cfg=algo_cfg, workspace=workspace, logs_dir=logs_dir)
+
+            # Retry/backoff (10s,30s,60s); deadline 8 minutes per your policy
+            delays = [10, 30, 60]
+            attempt = 0
+            start_time = time.time()
+
+            while True:
+                try:
+                    exec_res = adapter.execute(tok, deadline_s=480)
+                    # exec_res.glb_path currently holds the remote URL; download it
+                    if str(exec_res.glb_path).startswith("http"):
+                        with requests.get(
+                            str(exec_res.glb_path), stream=True, timeout=120
+                        ) as r:
+                            r.raise_for_status()
+                            with out_glb.open("wb") as f:
+                                for chunk in r.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        f.write(chunk)
+                    else:
+                        # already a file path (future adapters may return local paths)
+                        Path(exec_res.glb_path).replace(out_glb)
+                    status = "completed"
+                    error_msg = ""
+                    break
+                except AdapterTransientError as e:
+                    if attempt >= len(delays):
+                        status = "failed"
+                        error_msg = f"transient_exhausted: {e}"
+                        break
+                    time.sleep(delays[attempt])
+                    attempt += 1
+                    continue
+                except AdapterPermanentError as e:
+                    status = "failed"
+                    error_msg = f"permanent: {e}"
+                    break
+
+            finished_time = time.time()
+            duration = finished_time - start_time
 
             # Append to registry
-            row = ExecResult(
-                job_id=job_id,
-                run_id=run_id,
-                product_id=product_id,
-                variant=variant,
-                algo=algo,
-                image_set=image_set,
-                n_images=n_images,
-                img_suffixes=img_suffixes,
-                status=status,
-                started_at=started_at,
-                finished_at=finished_at,
-                duration_s=duration_s,
-                output_glb_relpath=output_rel,
-                worker=worker_id,
-                error_msg=error_msg,
-            )
+            row = {
+                "run_id": run_id,
+                "job_id": tok.job_id,
+                "product_id": tok.product_id,
+                "algo": algo,
+                "n_images": len(tok.image_files),
+                "img_suffixes": tok.img_suffixes,
+                "status": status,
+                "started_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(start_time)
+                ),
+                "finished_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(finished_time)
+                ),
+                "duration_s": duration,
+                "output_glb_relpath": (
+                    str(out_glb.relative_to(workspace))
+                    if status == "completed"
+                    else ""
+                ),
+                "worker": worker_id,
+                "error_msg": error_msg,
+                "lpips": None,  # keep placeholders per Step-1
+                "fscore": None,
+                # NEW:
+                "unit_price_usd": float(algo_cfg.get("unit_price_usd", 0.0)),
+                "estimated_cost_usd": float(
+                    algo_cfg.get("unit_price_usd", 0.0)
+                ),  # one call per job
+                "price_source": str(algo_cfg.get("price_source", "unknown")),
+            }
             _writerow_locked(paths, row)
 
             # Mark completed
@@ -332,18 +408,17 @@ def run_worker(
             logging.error(f"Worker failed on token {inprog.name}: {e!r}")
             try:
                 finished_at = _now_iso()
-                duration_s = round(time.perf_counter() - started, 6)
-                
+                duration_s = round(time.perf_counter() - time.perf_counter(), 6)
+
                 # Use variables captured before the exception if possible
                 image_set = ",".join(image_files)
                 n_images = len(image_files)
-                img_suffixes = _img_suffixes_from_list(image_files)
 
                 status = "failed"
                 error_msg = repr(e)
 
                 row = ExecResult(
-                    job_id=job_id, # Will be from token or empty
+                    job_id=job_id,  # Will be from token or empty
                     run_id=run_id,
                     product_id=product_id,
                     variant=variant,
@@ -352,14 +427,19 @@ def run_worker(
                     n_images=n_images,
                     img_suffixes=img_suffixes,
                     status=status,
-                    started_at=started_at,
+                    started_at=_now_iso(),
                     finished_at=finished_at,
                     duration_s=duration_s,
                     output_glb_relpath=output_rel,
                     worker=worker_id,
                     error_msg=error_msg,
+                    lpips=None,
+                    fscore=None,
+                    unit_price_usd=0.0,
+                    estimated_cost_usd=0.0,
+                    price_source="unknown",
                 )
-                _writerow_locked(paths, row)
+                _writerow_locked(paths, asdict(row))
             finally:
                 # Mark failed
                 try:
