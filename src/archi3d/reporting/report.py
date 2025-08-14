@@ -48,39 +48,36 @@ def build(run_id: str, out_dir: Path, paths: PathResolver) -> List[Path]:
     eff = load_config()
     thr = eff.global_config.thresholds
 
-    # Inputs
+    # --- Load all necessary data ---
     results_path = paths.results_parquet
     manifest_path = paths.manifest_inputs_csv(run_id)
-
-    # Load the now-enriched items.csv
     items_path = paths.items_csv
+
+    df = _safe_read_parquet(results_path)
+    man = _safe_read_csv(manifest_path, dtype=str)
     items_df = _safe_read_csv(items_path, dtype=str)
 
-    # Filter results for this run
-    df = _safe_read_parquet(paths.results_parquet)
-    if df.empty:
-        # Handle case with no results yet
-        # The original code handles empty dataframes gracefully, so we will just create an empty df
-        run_df = pd.DataFrame()
-    else:
-        run_df = df[df["run_id"] == run_id].copy()
-        
-    man = _safe_read_csv(manifest_path, dtype=str)
+    # Filter this run
+    if not df.empty:
+        df = df[df["run_id"] == run_id].copy()
 
-    # ---- JOIN WITH METADATA ----
-    # Merge run results with item metadata to get categories for each result
-    if not items_df.empty:
-        # We need to handle variants. Let's create a unique key.
-        # This part may need refinement based on how product_id and variant uniquely identify an item.
-        # For now, let's assume a simple join on product_id is sufficient for a first pass.
+    # --- Merge results with item metadata to get categories ---
+    report_df = df
+    if not df.empty and not items_df.empty:
+        # Define all the columns we want to bring in from the items catalog
+        merge_cols = [
+            "product_id", "product_name",
+            "category_l1", "category_l2", "category_l3"
+        ]
+        # Ensure we only try to merge columns that actually exist in items_df
+        cols_to_merge = [col for col in merge_cols if col in items_df.columns]
+        
         report_df = pd.merge(
-            run_df,
-            items_df[["product_id", "category_l1", "category_l2"]], # Add columns you need
+            df,
+            items_df[cols_to_merge],
             on="product_id",
             how="left"
         )
-    else:
-        report_df = run_df
     
     # All subsequent operations will use `report_df` which is the filtered and enriched dataframe
     df = report_df
@@ -172,17 +169,27 @@ def build(run_id: str, out_dir: Path, paths: PathResolver) -> List[Path]:
 
     # failures detail
     failures_df = pd.DataFrame()
-    if not df.empty:
-        failures_df = df[df["status"] == "failed"][
-            ["product_id", "algo", "img_suffixes", "error_msg", "started_at", "finished_at"]
-        ].copy()
+    if not report_df.empty:
+        failed_subset = report_df[report_df["status"] == "failed"]
+        # UPDATED: Add category_l2 and category_l3 to the list of columns
+        failure_cols = [
+            "product_id", "product_name", "category_l1", "category_l2", "category_l3", 
+            "algo", "img_suffixes", "error_msg", "started_at", "finished_at"
+        ]
+        cols_to_select = [col for col in failure_cols if col in failed_subset.columns]
+        failures_df = failed_subset[cols_to_select].copy()
 
     # outputs index
     outputs_df = pd.DataFrame()
-    if not df.empty:
-        outputs_df = df[df["status"] == "completed"][
-            ["product_id", "algo", "img_suffixes", "output_glb_relpath"]
-        ].copy()
+    if not report_df.empty:
+        completed_subset = report_df[report_df["status"] == "completed"]
+        # UPDATED: Add category_l2 and category_l3 to the list of columns
+        output_cols = [
+            "product_id", "product_name", "category_l1", "category_l2", "category_l3", 
+            "algo", "img_suffixes", "output_glb_relpath"
+        ]
+        cols_to_select = [col for col in output_cols if col in completed_subset.columns]
+        outputs_df = completed_subset[cols_to_select].copy()
 
     overview_path = out_dir / "overview.yaml"
     overview_path.write_text(yaml.safe_dump(overview, sort_keys=False), encoding="utf-8")
