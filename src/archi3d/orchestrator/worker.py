@@ -6,6 +6,7 @@ import os
 import re
 import time
 import getpass
+import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,8 +65,22 @@ def _derive_variant_slug(product_id: str, first_image_rel: str) -> str:
     """
     try:
         p = Path(first_image_rel)
+        # Expected structure has at least 2 parts: 'dataset', '<folder_name>'
+        if len(p.parts) < 2:
+            logging.warning(
+                f"Could not derive variant slug: path '{first_image_rel}' has fewer than 2 parts."
+            )
+            return ""
+        
         folder_name = p.parts[1]  # dataset/<folder_name>/images/...
-    except Exception:
+
+    except IndexError:
+        # This will catch cases where the path is malformed, e.g., not containing enough parts.
+        logging.warning(
+            f"Could not derive variant slug from path '{first_image_rel}'. "
+            "Path structure is not as expected ('dataset/<folder>/...').",
+            exc_info=True, # exc_info=True adds the traceback to the log
+        )
         return ""
 
     # folder_name may be "12345" or "12345 - Variant Name"
