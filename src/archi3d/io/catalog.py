@@ -88,30 +88,35 @@ def _select_gt(gt_dir: Path) -> Tuple[Path | None, List[str]]:
 
 def _load_enriched_data(dataset_root: Path) -> pd.DataFrame:
     """Loads and cleans the enriched data from a markdown-like table."""
-    enriched_path = dataset_root.parent / "check_enriched.txt" # Assuming it's next to dataset/
+    # The enriched file is expected to be in the workspace root, next to the dataset/ folder
+    enriched_path = dataset_root.parent / "check_enriched.txt"
     if not enriched_path.exists():
-        # You might want to log a warning here instead of raising an error
-        # if the enriched data is optional.
         print(f"Warning: Enriched data file not found at {enriched_path}")
         return pd.DataFrame()
 
-    # Read the markdown table, skipping header line and parsing pipe delimiters
-    df = pd.read_csv(
-        enriched_path,
-        sep="|",
-        header=0,
-        skipinitialspace=True,
-        on_bad_lines='skip'
-    ).iloc[1:] # Skip the ---|--- separator line
+    with open(enriched_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
 
-    # Clean up column names and drop empty columns from parsing
-    df = df.rename(columns=lambda x: x.strip())
-    df = df.dropna(axis=1, how='all').drop(columns=[''])
-    
-    # Clean data in columns
-    for col in df.columns:
-        df[col] = df[col].str.strip()
+    # Get column headers from the first line, stripping whitespace and slicing to ignore
+    # the empty strings created by the leading/trailing pipes.
+    header = [h.strip() for h in lines[0].split('|')[1:-1]]
 
+    # Process the data lines, skipping the header (index 0) and the separator (index 1)
+    data_rows = []
+    for line in lines[2:]:
+        if not line.strip():
+            continue
+        # Split the line and slice it to align with the header
+        cells = [cell.strip() for cell in line.split('|')[1:-1]]
+        if len(cells) == len(header):
+            data_rows.append(cells)
+
+    if not data_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data_rows, columns=header)
+
+    # Clean up column names to match the expected schema
     df = df.rename(columns={
         "Folder Name": "folder_name",
         "ProductID": "product_id",
@@ -123,11 +128,15 @@ def _load_enriched_data(dataset_root: Path) -> pd.DataFrame:
         "Category level 2": "category_l2",
         "Category level 3": "category_l3",
     })
-    # Set a multi-index for easy lookup
-    df['product_id'] = df['product_id'].astype(str)
-    
-    # The 'folder_name' is the key to join with filesystem folders
-    df = df.set_index("folder_name")
+
+    # Ensure product_id is a string for consistent merging
+    if 'product_id' in df.columns:
+        df['product_id'] = df['product_id'].astype(str)
+
+    # Use the folder_name as the index for easy lookups
+    if 'folder_name' in df.columns:
+        df = df.set_index("folder_name")
+
     return df
 
 
