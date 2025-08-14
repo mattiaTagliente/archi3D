@@ -1,0 +1,18 @@
+# archi3d/config/adapters.yaml
+adapters:
+  trellis_multi_stochastic:
+    endpoint: "fal-ai/trellis/multi"
+    unit_price_usd: 0.02
+    price_source: "fal.ai 2025-08 list"
+    defaults:
+      multiimage_algo: "stochastic"
+      texture_size: 2048
+      # seed omitted => provider default
+  trellis_multi_multidiffusion:
+    endpoint: "fal-ai/trellis/multi"
+    unit_price_usd: 0.02
+    price_source: "fal.ai 2025-08 list"
+    defaults:
+      multiimage_algo: "multidiffusion"
+      texture_size: 2048
+      # seed omitted => provider defaults
