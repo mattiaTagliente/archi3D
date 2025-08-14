@@ -52,12 +52,59 @@ def build(run_id: str, out_dir: Path, paths: PathResolver) -> List[Path]:
     results_path = paths.results_parquet
     manifest_path = paths.manifest_inputs_csv(run_id)
 
-    df = _safe_read_parquet(results_path)
+    # Load the now-enriched items.csv
+    items_path = paths.items_csv
+    items_df = _safe_read_csv(items_path, dtype=str)
+
+    # Filter results for this run
+    df = _safe_read_parquet(paths.results_parquet)
+    if df.empty:
+        # Handle case with no results yet
+        # The original code handles empty dataframes gracefully, so we will just create an empty df
+        run_df = pd.DataFrame()
+    else:
+        run_df = df[df["run_id"] == run_id].copy()
+        
     man = _safe_read_csv(manifest_path, dtype=str)
 
-    # Filter this run
-    if not df.empty:
-        df = df[df["run_id"] == run_id].copy()
+    # ---- JOIN WITH METADATA ----
+    # Merge run results with item metadata to get categories for each result
+    if not items_df.empty:
+        # We need to handle variants. Let's create a unique key.
+        # This part may need refinement based on how product_id and variant uniquely identify an item.
+        # For now, let's assume a simple join on product_id is sufficient for a first pass.
+        report_df = pd.merge(
+            run_df,
+            items_df[["product_id", "category_l1", "category_l2"]], # Add columns you need
+            on="product_id",
+            how="left"
+        )
+    else:
+        report_df = run_df
+    
+    # All subsequent operations will use `report_df` which is the filtered and enriched dataframe
+    df = report_df
+
+    # Write artifacts
+    artifacts: List[Path] = []
+
+    # ---- PLOT GENERATION ----
+    # Now you can use report_df to generate the plots from the screenshots.
+    # This is where you would use libraries like seaborn and matplotlib.
+    # For example, to create the LPIPS distribution boxplots:
+    #
+    # import seaborn as sns
+    # import matplotlib.pyplot as plt
+    #
+    # if 'category_l2' in report_df.columns:
+    #     g = sns.catplot(
+    #         data=report_df,
+    #         x='category_l2', y='lpips', hue='algo',
+    #         col='n_images', kind='box', col_wrap=2
+    #     )
+    #     plot_path = out_dir / "lpips_distribution.png"
+    #     g.savefig(plot_path)
+    #     artifacts.append(plot_path)
 
     # Overview counts
     queued = int(man[man.get("reason", "") == ""].shape[0]) if not man.empty else 0
@@ -136,9 +183,6 @@ def build(run_id: str, out_dir: Path, paths: PathResolver) -> List[Path]:
         outputs_df = df[df["status"] == "completed"][
             ["product_id", "algo", "img_suffixes", "output_glb_relpath"]
         ].copy()
-
-    # Write artifacts
-    artifacts: List[Path] = []
 
     overview_path = out_dir / "overview.yaml"
     overview_path.write_text(yaml.safe_dump(overview, sort_keys=False), encoding="utf-8")
