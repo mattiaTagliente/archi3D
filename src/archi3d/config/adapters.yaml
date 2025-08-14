@@ -16,3 +16,11 @@ adapters:
       multiimage_algo: "multidiffusion"
       texture_size: 2048
       # seed omitted => provider defaults
+  tripo3d_v2p5_multi:
+    endpoint: "tripo3d/tripo/v2.5/multiview-to-3d"
+    unit_price_usd: 0.40
+    price_source: "fal.ai 2025-08 list"
+    defaults:
+      pbr: true          # as requested
+      texture: "HD"      # as requested
+      # all other options left to provider defaults

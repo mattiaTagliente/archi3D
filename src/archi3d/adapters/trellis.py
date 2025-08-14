@@ -1,5 +1,5 @@
 from __future__ import annotations
-import time, json, threading
+import time, json, threading, sys
 from pathlib import Path
 from typing import Any, Dict, List
 import requests
@@ -39,7 +39,7 @@ class TrellisMultiAdapter(ModelAdapter):
         # 2) Upload images to fal CDN.
         start_upload = time.monotonic()
         image_urls = self._upload_images(abs_paths)
-        upload_s = time.monotonic() - start_upload
+        _ = time.monotonic() - start_upload
 
         # 3) Build arguments from config defaults + uploads
         endpoint = str(algo_cfg["endpoint"])
@@ -51,11 +51,20 @@ class TrellisMultiAdapter(ModelAdapter):
         err_container: Dict[str, BaseException | None] = {"e": None}
 
         def on_queue_update(update):
-            if isinstance(update, fal_client.InProgress):
-                if update.logs:
-                    for log in update.logs:
-                        if "message" in log:
-                            _write_line(log_file, log["message"])
+            if isinstance(update, fal_client.InProgress) and update.logs:
+                # Write all logs to the file for complete history
+                for log in update.logs:
+                    if "message" in log:
+                        _write_line(log_file, log["message"])
+                
+                # Get the last message to display on the console
+                last_log = update.logs[-1]
+                if "message" in last_log:
+                    # Strip newlines to prevent flooding the console
+                    msg = last_log["message"].strip()
+                    # Print to console, overwriting previous line
+                    sys.stdout.write(f"\r\033[K> {msg}")
+                    sys.stdout.flush()
 
         def _runner():
             try:
@@ -67,6 +76,10 @@ class TrellisMultiAdapter(ModelAdapter):
         t = threading.Thread(target=_runner, daemon=True)
         t.start()
         t.join(timeout=deadline_s)
+
+        # Clear the line after the process is finished
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
 
         if t.is_alive():
             _write_line(log_file, f"[ERROR] Deadline exceeded ({deadline_s}s); cancelling locally.")
