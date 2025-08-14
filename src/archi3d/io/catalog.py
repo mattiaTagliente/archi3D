@@ -86,17 +86,54 @@ def _select_gt(gt_dir: Path) -> Tuple[Path | None, List[str]]:
     return fbxs[0], notes
 
 
+def _load_enriched_data(dataset_root: Path) -> pd.DataFrame:
+    """Loads and cleans the enriched data from a markdown-like table."""
+    enriched_path = dataset_root.parent / "check_enriched.txt" # Assuming it's next to dataset/
+    if not enriched_path.exists():
+        # You might want to log a warning here instead of raising an error
+        # if the enriched data is optional.
+        print(f"Warning: Enriched data file not found at {enriched_path}")
+        return pd.DataFrame()
+
+    # Read the markdown table, skipping header line and parsing pipe delimiters
+    df = pd.read_csv(
+        enriched_path,
+        sep="|",
+        header=0,
+        skipinitialspace=True,
+        on_bad_lines='skip'
+    ).iloc[1:] # Skip the ---|--- separator line
+
+    # Clean up column names and drop empty columns from parsing
+    df = df.rename(columns=lambda x: x.strip())
+    df = df.dropna(axis=1, how='all').drop(columns=[''])
+    
+    # Clean data in columns
+    for col in df.columns:
+        df[col] = df[col].str.strip()
+
+    df = df.rename(columns={
+        "Folder Name": "folder_name",
+        "ProductID": "product_id",
+        "Manufacturer": "manufacturer",
+        "Name": "product_name",
+        "Description": "description",
+        "Views": "views",
+        "Category level 1": "category_l1",
+        "Category level 2": "category_l2",
+        "Category level 3": "category_l3",
+    })
+    # Set a multi-index for easy lookup
+    df['product_id'] = df['product_id'].astype(str)
+    
+    # The 'folder_name' is the key to join with filesystem folders
+    df = df.set_index("folder_name")
+    return df
+
+
 def build_items_csv(dataset_root: Path, out_csv: Path) -> CatalogStats:
     """
-    Scan the dataset tree (immediate children folders are products) and write `items.csv`.
-
-    Columns:
-      product_id, product_name, variant, n_images,
-      image_files (semicolon-separated relpaths under 'dataset/'),
-      gt_fbx_relpath (under 'dataset/'), notes
-
-    Relpaths are written with a 'dataset/' prefix so they are portable across machines
-    (no absolute paths are ever embedded).
+    Scan the dataset tree and write `items.csv`, enriched with metadata.
     """
     dataset_root = Path(dataset_root)
     if not dataset_root.exists():
@@ -107,6 +144,9 @@ def build_items_csv(dataset_root: Path, out_csv: Path) -> CatalogStats:
 
     # Prefix used to store portable relpaths (workspace-root independent)
     DATASET_PREFIX = Path("dataset")
+    
+    # Load the enriched data
+    enriched_df = _load_enriched_data(dataset_root)
 
     product_dirs = sorted([p for p in dataset_root.iterdir() if p.is_dir()], key=lambda p: p.name.lower())
 
@@ -116,6 +156,19 @@ def build_items_csv(dataset_root: Path, out_csv: Path) -> CatalogStats:
     for prod_dir in product_dirs:
         product_id, variant = _split_folder_name(prod_dir.name)
 
+        # ---- ENRICHMENT LOGIC ----
+        enriched_data = {}
+        if not enriched_df.empty and prod_dir.name in enriched_df.index:
+            enriched_row = enriched_df.loc[prod_dir.name].to_dict()
+            enriched_data = {
+                "product_name": enriched_row.get("product_name", ""),
+                "manufacturer": enriched_row.get("manufacturer", ""),
+                "description": enriched_row.get("description", ""),
+                "category_l1": enriched_row.get("category_l1", ""),
+                "category_l2": enriched_row.get("category_l2", ""),
+                "category_l3": enriched_row.get("category_l3", ""),
+            }
+        
         images_dir = prod_dir / "images"
         gt_dir = prod_dir / "gt"
 
@@ -136,12 +189,17 @@ def build_items_csv(dataset_root: Path, out_csv: Path) -> CatalogStats:
 
         row = {
             "product_id": product_id,
-            "product_name": "",  # not derivable from FS structure (left intentionally blank)
+            "product_name": enriched_data.get("product_name", ""), # Now populated
             "variant": variant,
             "n_images": str(len(image_paths)),
             "image_files": ";".join(str(p.as_posix()) for p in image_rels),
             "gt_fbx_relpath": gt_rel.as_posix(),
             "notes": ",".join(notes) if notes else "",
+            # Add other enriched fields as columns
+            "manufacturer": enriched_data.get("manufacturer", ""),
+            "category_l1": enriched_data.get("category_l1", ""),
+            "category_l2": enriched_data.get("category_l2", ""),
+            "category_l3": enriched_data.get("category_l3", ""),
         }
         rows.append(row)
 
@@ -149,13 +207,9 @@ def build_items_csv(dataset_root: Path, out_csv: Path) -> CatalogStats:
             issues.append({"product_id": product_id, "variant": variant, "notes": row["notes"]})
 
     df = pd.DataFrame(rows, columns=[
-        "product_id",
-        "product_name",
-        "variant",
-        "n_images",
-        "image_files",
-        "gt_fbx_relpath",
-        "notes",
+        "product_id", "product_name", "variant", "n_images",
+        "image_files", "gt_fbx_relpath", "notes", "manufacturer",
+        "category_l1", "category_l2", "category_l3"
     ])
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
