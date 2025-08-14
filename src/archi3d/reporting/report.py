@@ -175,9 +175,9 @@ def build(run_id: str, out_dir: Path, paths: PathResolver) -> List[Path]:
     failures_df = pd.DataFrame()
     if not report_df.empty:
         failed_subset = report_df[report_df["status"] == "failed"]
-        # UPDATED: Add category_l2 and category_l3 to the list of columns
+        # UPDATED: Add 'variant' to the list of columns
         failure_cols = [
-            "product_id", "product_name", "category_l1", "category_l2", "category_l3", 
+            "product_id", "variant", "product_name", "category_l1", "category_l2", "category_l3", 
             "algo", "img_suffixes", "error_msg", "started_at", "finished_at"
         ]
         cols_to_select = [col for col in failure_cols if col in failed_subset.columns]
@@ -187,9 +187,9 @@ def build(run_id: str, out_dir: Path, paths: PathResolver) -> List[Path]:
     outputs_df = pd.DataFrame()
     if not report_df.empty:
         completed_subset = report_df[report_df["status"] == "completed"]
-        # UPDATED: Add category_l2 and category_l3 to the list of columns
+        # UPDATED: Add 'variant' to the list of columns
         output_cols = [
-            "product_id", "product_name", "category_l1", "category_l2", "category_l3", 
+            "product_id", "variant", "product_name", "category_l1", "category_l2", "category_l3", 
             "algo", "img_suffixes", "output_glb_relpath"
         ]
         cols_to_select = [col for col in output_cols if col in completed_subset.columns]
