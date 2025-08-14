@@ -11,7 +11,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import pandas as pd
 import requests
@@ -259,7 +259,9 @@ def run_worker(
             product_id: str = token_json["product_id"]
             variant: str = token_json.get("variant", "")
             image_files: List[str] = list(token_json.get("image_files", []))
-            img_suffixes: str = token_json.get("img_suffixes", "")
+            
+            # Recalculate img_suffixes from the image_files list
+            img_suffixes = _img_suffixes_from_list(image_files)
 
             # --- JOB ID INTEGRITY CHECK ---
             image_csv = ",".join(image_files)
@@ -319,7 +321,7 @@ def run_worker(
                 product_id=token_json["product_id"],
                 variant=token_json.get("variant", ""),
                 image_files=token_json["image_files"],
-                img_suffixes=token_json.get("img_suffixes", ""),
+                img_suffixes=img_suffixes, # Pass the calculated suffixes
                 job_id=token_json["job_id"],
             )
 
