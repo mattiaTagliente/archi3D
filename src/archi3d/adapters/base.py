@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Union
 
 class AdapterTransientError(RuntimeError): ...
 class AdapterPermanentError(RuntimeError): ...
@@ -18,7 +18,7 @@ class Token:
 
 @dataclass
 class ExecResult:
-    glb_path: Path
+    glb_path: Union[str, Path]
     timings: Dict[str, Any]  # raw timings if provider returns them
     request_id: str | None
 

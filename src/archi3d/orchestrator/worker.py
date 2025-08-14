@@ -335,10 +335,10 @@ def run_worker(
             while True:
                 try:
                     exec_res = adapter.execute(tok, deadline_s=480)
-                    # exec_res.glb_path currently holds the remote URL; download it
-                    if str(exec_res.glb_path).startswith("http"):
+                    # exec_res.glb_path currently holds the remote URL or a local path
+                    if isinstance(exec_res.glb_path, str) and exec_res.glb_path.startswith("http"):
                         with requests.get(
-                            str(exec_res.glb_path), stream=True, timeout=120
+                            exec_res.glb_path, stream=True, timeout=120
                         ) as r:
                             r.raise_for_status()
                             with out_glb.open("wb") as f:
