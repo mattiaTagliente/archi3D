@@ -222,11 +222,11 @@ def build_items_csv(dataset_root: Path, out_csv: Path) -> CatalogStats:
     ])
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out_csv, index=False, encoding="utf-8")
+    df.to_csv(out_csv, index=False, encoding="utf-8-sig")
 
     # Also write an issues list next to items.csv for quick triage
     issues_csv = out_csv.with_name("items_issues.csv")
-    pd.DataFrame(issues).to_csv(issues_csv, index=False, encoding="utf-8")
+    pd.DataFrame(issues).to_csv(issues_csv, index=False, encoding="utf-8-sig")
 
     stats = CatalogStats(
         items_total=len(product_dirs),
