@@ -13,6 +13,7 @@ from archi3d.config.paths import PathResolver
 
 
 def _safe_read_parquet(p: Path) -> pd.DataFrame:
+    """Safely reads a Parquet file, returning an empty DataFrame if it doesn't exist."""
     if not p.exists():
         return pd.DataFrame()
     df = pd.read_parquet(p)
@@ -20,6 +21,7 @@ def _safe_read_parquet(p: Path) -> pd.DataFrame:
 
 
 def _safe_read_csv(p: Path, dtype=None) -> pd.DataFrame:
+    """Safely reads a CSV file, returning an empty DataFrame if it doesn't exist."""
     if not p.exists():
         return pd.DataFrame()
     df = pd.read_csv(p, dtype=dtype).fillna("")
@@ -27,6 +29,7 @@ def _safe_read_csv(p: Path, dtype=None) -> pd.DataFrame:
 
 
 def _ensure_metric_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensures that the DataFrame has 'lpips' and 'fscore' columns, adding them as None if missing."""
     if "lpips" not in df.columns:
         df["lpips"] = None
     if "fscore" not in df.columns:
@@ -66,16 +69,17 @@ def build(run_id: str, out_dir: Path, paths: PathResolver) -> List[Path]:
     if not df.empty and not items_df.empty:
         # Define all the columns we want to bring in from the items catalog
         merge_cols = [
-            "product_id", "product_name",
+            "product_id", "variant", "product_name",
             "category_l1", "category_l2", "category_l3"
         ]
         # Ensure we only try to merge columns that actually exist in items_df
         cols_to_merge = [col for col in merge_cols if col in items_df.columns]
         
+        # USE A COMPOUND KEY FOR MERGING
         report_df = pd.merge(
             df,
             items_df[cols_to_merge],
-            on="product_id",
+            on=["product_id", "variant"], # <-- COMPOUND KEY
             how="left"
         )
     
