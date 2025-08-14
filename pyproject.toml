@@ -48,7 +48,7 @@ archi3d = "archi3d.cli:app"
 
 # This new section explicitly tells the build system where to find the package.
 [tool.hatch.build.targets.wheel]
-packages = ["archi3d"]
+packages = ["src/archi3d"]
 
 [tool.black]
 line-length = 100
