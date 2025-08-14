@@ -118,12 +118,20 @@ def _writerow_locked(paths: PathResolver, row: ExecResult) -> None:
     """
     lock_path = paths.results_parquet.with_suffix(".parquet.lock")
     with FileLock(str(lock_path)):
-        if paths.results_parquet.exists():
+        # --- FIX STARTS HERE ---
+        # Check if the results file exists and has content
+        if paths.results_parquet.exists() and paths.results_parquet.stat().st_size > 0:
             df = pd.read_parquet(paths.results_parquet)
+            # Create a DataFrame for the new row
+            new_row_df = pd.DataFrame([asdict(row)])
+            # Concatenate the existing DataFrame with the new row
+            df = pd.concat([df, new_row_df], ignore_index=True)
         else:
-            df = pd.DataFrame(columns=list(asdict(row).keys()))
-        df = pd.concat([df, pd.DataFrame([asdict(row)])], ignore_index=True)
-        df.to_parquet(paths.results_parquet, index=False)  # pyarrow engine default
+            # If the file doesn't exist or is empty, create a new DataFrame from the first row
+            df = pd.DataFrame([asdict(row)])
+        # --- FIX ENDS HERE ---
+        
+        df.to_parquet(paths.results_parquet, index=False)
 
 
 def _compose_output_names(
