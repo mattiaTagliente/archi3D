@@ -27,6 +27,7 @@ class ExecResult:
     job_id: str
     run_id: str
     product_id: str
+    variant: str
     algo: str
     image_set: str
     n_images: int
@@ -235,6 +236,7 @@ def run_worker(
             job_id: str = token["job_id"]
             job_id8 = job_id[:8]
             product_id: str = token["product_id"]
+            variant: str = token.get("variant", "")
             image_files: List[str] = list(token.get("image_files", []))
             image_set = ",".join(image_files)
             n_images = len(image_files)
@@ -285,6 +287,7 @@ def run_worker(
                 job_id=job_id,
                 run_id=run_id,
                 product_id=product_id,
+                variant=variant,
                 algo=algo,
                 image_set=image_set,
                 n_images=n_images,
@@ -311,6 +314,7 @@ def run_worker(
                     token = json.loads(inprog.read_text(encoding="utf-8"))
                     job_id = token.get("job_id", "")
                     product_id = token.get("product_id", "")
+                    variant = token.get("variant", "")
                     image_files = token.get("image_files", [])
                     image_set = ",".join(image_files) if image_files else ""
                     n_images = len(image_files) if image_files else 0
@@ -318,6 +322,7 @@ def run_worker(
                 except Exception:
                     job_id = ""
                     product_id = ""
+                    variant = ""
                     image_set = ""
                     n_images = 0
                     img_suffixes = ""
@@ -329,6 +334,7 @@ def run_worker(
                     job_id=job_id,
                     run_id=run_id,
                     product_id=product_id,
+                    variant=variant,
                     algo=algo,
                     image_set=image_set,
                     n_images=n_images,
