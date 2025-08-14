@@ -18,6 +18,9 @@ from filelock import FileLock
 
 from archi3d import __version__
 from archi3d.config.paths import PathResolver
+# Import the canonical function from batch.py
+from archi3d.orchestrator.batch import _compose_job_id
+
 
 # Matches trailing "_A.jpg" / "_B.png" (case-insensitive)
 _SUFFIX_RE = re.compile(r"_([A-Z])(?:\.[^.]+)$", re.IGNORECASE)
@@ -45,13 +48,6 @@ class ExecResult:
 # ---------------------------
 # Utilities
 # ---------------------------
-
-def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str) -> str:
-    """Helper to compute a job ID hash."""
-    # Note: version is pinned for reproducibility across code changes.
-    material = f"{algo}|{product_id}|{variant}|{image_csv}|{__version__}"
-    return hashlib.sha1(material.encode("utf-8")).hexdigest()
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -249,6 +245,7 @@ def run_worker(
             
             # --- JOB ID INTEGRITY CHECK ---
             image_csv = ",".join(image_files)
+            # Re-compute the job ID using the exact same function and data
             expected_job_id = _compose_job_id(
                 algo=token["algo"],
                 product_id=product_id,
