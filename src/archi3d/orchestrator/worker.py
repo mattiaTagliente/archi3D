@@ -374,6 +374,7 @@ def run_worker(
                 "run_id": run_id,
                 "job_id": tok.job_id,
                 "product_id": tok.product_id,
+                "variant": tok.variant,
                 "algo": algo,
                 "n_images": len(tok.image_files),
                 "img_suffixes": tok.img_suffixes,
