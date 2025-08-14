@@ -151,8 +151,9 @@ def _already_queued(queue_dir: Path, job_id_prefix: str) -> bool:
     return len(matches) > 0
 
 
-def _compose_job_id(algo: str, product_id: str, image_csv: str) -> str:
-    material = f"{algo}|{product_id}|{image_csv}|{__version__}"
+def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str) -> str:
+    """Computes a deterministic job ID from its core components."""
+    material = f"{algo}|{product_id}|{variant}|{image_csv}|{__version__}"
     return _sha1(material)
 
 
@@ -216,7 +217,7 @@ def create_batch(
             img_suffixes = _img_suffixes_from_list(selected)
 
             image_csv = ",".join(selected)
-            job_id = _compose_job_id(algo, product_id, image_csv)
+            job_id = _compose_job_id(algo, product_id, variant, image_csv)
             job_id8 = job_id[:8]
 
             # Skip reasons precedence
