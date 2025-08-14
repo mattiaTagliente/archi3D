@@ -7,6 +7,7 @@ import re
 import time
 import getpass
 import logging
+import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,13 @@ class ExecResult:
 # ---------------------------
 # Utilities
 # ---------------------------
+
+def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str) -> str:
+    """Helper to compute a job ID hash."""
+    # Note: version is pinned for reproducibility across code changes.
+    material = f"{algo}|{product_id}|{variant}|{image_csv}|{__version__}"
+    return hashlib.sha1(material.encode("utf-8")).hexdigest()
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -134,7 +142,6 @@ def _writerow_locked(paths: PathResolver, row: ExecResult) -> None:
     """
     lock_path = paths.results_parquet.with_suffix(".parquet.lock")
     with FileLock(str(lock_path)):
-        # --- FIX STARTS HERE ---
         # Check if the results file exists and has content
         if paths.results_parquet.exists() and paths.results_parquet.stat().st_size > 0:
             df = pd.read_parquet(paths.results_parquet)
@@ -145,7 +152,6 @@ def _writerow_locked(paths: PathResolver, row: ExecResult) -> None:
         else:
             # If the file doesn't exist or is empty, create a new DataFrame from the first row
             df = pd.DataFrame([asdict(row)])
-        # --- FIX ENDS HERE ---
         
         df.to_parquet(paths.results_parquet, index=False)
 
@@ -199,8 +205,8 @@ def run_worker(
 ) -> int:
     """
     Process up to `limit` tokens for the given run+algo.
-    Implements Option 1 (create placeholder GLB) for this step.
-    Returns the number of jobs processed (or would process in dry-run).
+    Implements an integrity check to ensure job tokens are not corrupt.
+    Returns the number of jobs processed.
     """
     paths.validate_expected_tree()
     queue_dir = paths.queue_dir(run_id)
@@ -230,14 +236,34 @@ def run_worker(
         error_msg = ""
         status = "completed"
         output_rel = ""
+        
+        # Initialize variables for the error block
+        job_id, product_id, variant, image_files = "", "", "", []
 
         try:
             token = json.loads(inprog.read_text(encoding="utf-8"))
             job_id: str = token["job_id"]
-            job_id8 = job_id[:8]
             product_id: str = token["product_id"]
             variant: str = token.get("variant", "")
             image_files: List[str] = list(token.get("image_files", []))
+            
+            # --- JOB ID INTEGRITY CHECK ---
+            image_csv = ",".join(image_files)
+            expected_job_id = _compose_job_id(
+                algo=token["algo"],
+                product_id=product_id,
+                variant=variant,
+                image_csv=image_csv
+            )
+
+            if job_id != expected_job_id:
+                raise ValueError(
+                    f"Job ID mismatch. Token has '{job_id}', but content computes to '{expected_job_id}'. "
+                    "The token file may be corrupt or was manually edited."
+                )
+            # --- END OF CHECK ---
+
+            job_id8 = job_id[:8]
             image_set = ",".join(image_files)
             n_images = len(image_files)
 
@@ -305,33 +331,22 @@ def run_worker(
             # Mark completed
             _rename_atomic(inprog, "completed")
 
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
+            logging.error(f"Worker failed on token {inprog.name}: {e!r}")
             try:
                 finished_at = _now_iso()
                 duration_s = round(time.perf_counter() - started, 6)
-                # Best-effort read token to capture ids
-                try:
-                    token = json.loads(inprog.read_text(encoding="utf-8"))
-                    job_id = token.get("job_id", "")
-                    product_id = token.get("product_id", "")
-                    variant = token.get("variant", "")
-                    image_files = token.get("image_files", [])
-                    image_set = ",".join(image_files) if image_files else ""
-                    n_images = len(image_files) if image_files else 0
-                    img_suffixes = _img_suffixes_from_list(image_files) if image_files else ""
-                except Exception:
-                    job_id = ""
-                    product_id = ""
-                    variant = ""
-                    image_set = ""
-                    n_images = 0
-                    img_suffixes = ""
+                
+                # Use variables captured before the exception if possible
+                image_set = ",".join(image_files)
+                n_images = len(image_files)
+                img_suffixes = _img_suffixes_from_list(image_files)
 
                 status = "failed"
                 error_msg = repr(e)
 
                 row = ExecResult(
-                    job_id=job_id,
+                    job_id=job_id, # Will be from token or empty
                     run_id=run_id,
                     product_id=product_id,
                     variant=variant,
