@@ -207,6 +207,7 @@ def create_batch(
 
     for _, row in items.iterrows():
         product_id = row["product_id"].strip()
+        variant = row["variant"].strip()
         gt_rel = row["gt_fbx_relpath"].strip()
         image_files = [p for p in row["image_files"].split(";") if p.strip()]
 
@@ -242,6 +243,7 @@ def create_batch(
                 "job_id": job_id,
                 "run_id": run_id,
                 "product_id": product_id,
+                "variant": variant,
                 "algo": algo,
                 "image_files": selected,  # relpaths under 'dataset/...'
                 "gt_fbx_relpath": gt_rel,  # may be empty
