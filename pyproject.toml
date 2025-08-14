@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling>=1.25,<2.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "archi3d"
+version = "0.1.0"
+description = "Archi3D: run-centric Image-to-3D testing harness with Typer CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Mattia Tagliente" }]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+dependencies = [
+  "typer>=0.12,<1.0",
+  "pydantic>=2.7,<3.0",
+  "pandas>=2.2,<3.0",
+  "pyarrow>=16,<18",
+  "PyYAML>=6.0.1,<7.0",
+  "rich>=13,<14",
+  "filelock>=3.13,<4.0",
+  "platformdirs>=4,<5",
+  "tqdm>=4.66,<5",
+  "packaging>=24,<25",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.5,<0.7",
+  "black>=24,<25",
+  "mypy>=1.10,<2.0",
+  "pytest>=8,<9",
+  "pip-tools>=7.4,<8.0",
+]
+
+[project.scripts]
+archi3d = "archi3d.cli:app"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "UP", "B", "PL"]
+fix = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+no_implicit_optional = true
+show_error_codes = true
+exclude = ["build/", "dist/"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
