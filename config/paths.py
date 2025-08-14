@@ -1,0 +1,96 @@
+# archi3d/config/paths.py
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+from .schema import EffectiveConfig
+
+
+class PathResolver:
+    """
+    Central place to resolve all project paths from the (per-user) workspace.
+    Creates mutable subtrees (runs/, tables/, reports/) on demand.
+    Never hard-codes absolute paths; everything is under the configured workspace.
+    """
+
+    def __init__(self, eff: EffectiveConfig) -> None:
+        if eff.user_config is None:
+            raise RuntimeError("EffectiveConfig.user_config is required")
+        self._eff = eff
+
+        # ---- Workspace (absolute) ----
+        self.workspace_root: Path = Path(eff.user_config.workspace).resolve()
+
+        # ---- Static trees (expected to exist) ----
+        self.dataset_root: Path = self.workspace_root / "dataset"
+
+        # ---- Mutable trees (created on demand) ----
+        self.runs_dir: Path = self.workspace_root / "runs"
+        self.tables_dir: Path = self.workspace_root / "tables"
+        self.reports_dir: Path = self.workspace_root / "reports"
+
+        # Create mutable dirs if missing
+        for d in (self.runs_dir, self.tables_dir, self.reports_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        # Canonical table files (created by commands when needed)
+        self.items_csv: Path = self.tables_dir / "items.csv"
+        self.results_parquet: Path = self.tables_dir / "results.parquet"
+
+    # -------------------------
+    # Run-scoped paths
+    # -------------------------
+    def run_dir(self, run_id: str) -> Path:
+        p = self.runs_dir / run_id
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def run_config_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "config.yaml"
+
+    def manifest_inputs_csv(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "manifest_inputs.csv"
+
+    def queue_dir(self, run_id: str) -> Path:
+        q = self.run_dir(run_id) / "queue"
+        q.mkdir(parents=True, exist_ok=True)
+        return q
+
+    def outputs_dir(self, run_id: str, algo: Optional[str] = None) -> Path:
+        base = self.run_dir(run_id) / "outputs"
+        base.mkdir(parents=True, exist_ok=True)
+        if algo:
+            a = base / algo
+            a.mkdir(parents=True, exist_ok=True)
+            return a
+        return base
+
+    def metrics_dir(self, run_id: str) -> Path:
+        m = self.run_dir(run_id) / "metrics"
+        m.mkdir(parents=True, exist_ok=True)
+        return m
+
+    def reports_out_dir(self, run_id: str) -> Path:
+        out = self.reports_dir / run_id
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+
+    # -------------------------
+    # Utilities
+    # -------------------------
+    def rel_to_workspace(self, path: Path) -> Path:
+        """Return path relative to workspace (useful for registry)."""
+        path = path.resolve()
+        return path.relative_to(self.workspace_root)
+
+    def validate_expected_tree(self) -> None:
+        """
+        Validate the read-only parts of the tree exist (dataset at least).
+        Commands should call this and fail early with a clear message.
+        """
+        if not self.dataset_root.exists():
+            raise FileNotFoundError(
+                f"Dataset root not found: {self.dataset_root}\n"
+                "Please verify your 'workspace/dataset' path."
+            )

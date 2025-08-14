@@ -1,0 +1,402 @@
+# PRD — Archi3D v0.1.0 (Step 1)
+
+**Scope:** Package skeleton + Typer CLI and the 5 commands (`catalog build`, `batch create`, `run worker`, `metrics compute`, `report build`) with idempotent, OneDrive-safe orchestration.
+
+---
+
+## 1) At-a-glance checklist (what’s implemented)
+
+* Python package `archi3d` with Typer CLI and sub-apps: `catalog`, `batch`, `run`, `metrics`, `report`.
+* Config system: repo `global.yaml` + per-user `~/.archi3d/config.yaml` + env override `ARCHI3D_WORKSPACE`.
+* Path resolver with **no hard-coded absolutes**; creates mutable trees on demand.
+* Catalog scanner → `tables/items.csv` + `tables/items_issues.csv`.
+* Batch creation with **per-algorithm image-count policies**, **readable queue tokens**, `manifest_inputs.csv`, and **idempotency (skip already completed & already queued)**.
+* Worker with **atomic file-renames**, **readable artifact names**, **placeholder outputs**, **registry append** (`tables/results.parquet`) under a file lock.
+* Metrics step writes **placeholder sidecars** and ensures schema readiness.
+* Report builder emits **overview + by-algo + failures + outputs index** artifacts.
+* Dependency policy (pinned ranges), build system (`hatchling`), dev tooling (ruff/black/mypy/pytest).
+* Windows/OneDrive safety: filename sanitization and length caps; rename-based locking.
+
+---
+
+## 2) Context & goals
+
+This project orchestrates multi-model Image-to-3D experiments over a shared **workspace** (e.g., OneDrive/Teams). Step 1 delivers a working CLI, stable data contracts, deterministic job creation, multi-user safety, and human-readable artifacts—without yet integrating real model adapters or computing real metrics.
+
+**Non-goals (Step 1):** running actual reconstruction models; real LPIPS/F-score; visualization dashboards.
+
+---
+
+## 3) System overview
+
+### 3.1 Directory layout (under the **per-user workspace**)
+
+```
+workspace/
+├── dataset/            # immutable inputs (per-product folders with images/ & gt/)
+├── runs/               # one subfolder per run_id
+│   └── <run_id>/
+│       ├── config.yaml
+│       ├── manifest_inputs.csv
+│       ├── manifest_summary.yaml
+│       ├── queue/                       # *.todo.json → *.inprogress.* → *.completed.json
+│       ├── outputs/<algo>/              # human-readable *.glb placeholders for now
+│       ├── metrics/                     # per-job *.json sidecars (placeholders now)
+│       └── logs/                        # (reserved)
+├── reports/
+│   └── <run_id>/                        # overview.yaml, by_algo.csv, failures.csv, outputs_index.csv
+└── tables/
+    ├── items.csv
+    ├── items_issues.csv
+    └── results.parquet                  # append-only registry (file-locked)
+```
+
+### 3.2 Package modules (key files)
+
+* `archi3d/cli.py` — Typer root app + 5 sub-apps.
+* `archi3d/config/{schema,loader,paths}.py` — config models, merge logic, path resolver.
+* `archi3d/io/catalog.py` — dataset scanner.
+* `archi3d/orchestrator/{batch,worker}.py` — manifest/queue + worker execution.
+* `archi3d/metrics/compute.py` — placeholder metrics.
+* `archi3d/reporting/report.py` — CSV-first reporting.
+* `archi3d/__main__.py` — enables `python -m archi3d`.
+
+---
+
+## 4) Configuration
+
+### 4.1 Files & precedence
+
+* **Repo:** `global.yaml`
+
+  * `algorithms`: canonical list of algorithm keys.
+  * `thresholds`: `{ lpips_max: 0.15, fscore_min: 0.65 }`.
+* **Per-user:** `~/.archi3d/config.yaml`
+
+  * `workspace`: absolute path to the shared *Testing* workspace (e.g.,
+    `C:\Users\matti\Politecnico di Bari(1)\B4V - Archiproducts - General\Testing`).
+* **Env (highest precedence for workspace):** `ARCHI3D_WORKSPACE`.
+
+### 4.2 Merge order
+
+`global.yaml` → `~/.archi3d/config.yaml` → `ARCHI3D_WORKSPACE`. Missing workspace → fail fast with guidance.
+
+---
+
+## 5) CLI commands (interfaces & behavior)
+
+### 5.1 `archi3d catalog build`
+
+* **Input:** `dataset/` tree. Allowed image extensions: `.jpg`, `.jpeg`, `.png`; GT in `gt/*.fbx`.
+* **Output:** `tables/items.csv` + `tables/items_issues.csv`.
+* **Ordering:** images with suffix `_A/_B/_C…` first (A→Z), then rest lexicographically.
+* **Notes:** portable relpaths **prefixed with `dataset/`** to avoid absolutes.
+
+### 5.2 `archi3d batch create --run-id <ID> [--algos <CSV>] [--only <glob>]`
+
+* Reads `tables/items.csv`; filters with `--only` (glob on `product_id`).
+* Enforces **per-algorithm image-count policies** (see §6).
+* **Skips** with reasons: `no_images`, `insufficient_images(min=…)`, `already_completed`, `already_queued`, or `unknown_algo_policy:…`.
+* **Writes:**
+
+  * `runs/<run_id>/config.yaml` (immutable snapshot: `algorithms`, `code_version`, timestamp).
+  * **Queue tokens** in `runs/<run_id>/queue/` using *readable naming* (see §7).
+  * `runs/<run_id>/manifest_inputs.csv` and `manifest_summary.yaml`.
+
+### 5.3 `archi3d run worker --run-id <ID> --algo <KEY> [--limit N] [--dry-run]`
+
+* Selects tokens matching the readable pattern (legacy pattern supported for transition).
+* Atomic claim via **rename**: `*.todo.json → *.inprogress.<worker_id>.json`.
+* **Stub execution (Step 1):** creates an empty `.glb` in `outputs/<algo>/…`, writes a **placeholder** metrics sidecar, appends a row to `results.parquet` under a file lock.
+* **Finalize:** rename to `*.completed.json` (or `*.failed.json` with `error_msg`).
+* Worker identity: `ARCHI3D_WORKER_ID` env var, else OS user.
+
+### 5.4 `archi3d metrics compute --run-id <ID> [--algo <KEY>] [--recompute]`
+
+* Ensures `lpips`/`fscore` columns exist in `results.parquet`.
+* For completed rows, (re)writes sidecars with `computed_at` timestamp; **metrics remain `null`** for now.
+
+### 5.5 `archi3d report build --run-id <ID> [--out <dir>]`
+
+* Emits: `overview.yaml`, `by_algo.csv`, `failures.csv`, `outputs_index.csv`.
+* Uses thresholds from `global.yaml`. Pass rate counts only rows with populated metrics.
+
+---
+
+## 6) Image-selection policies (per algorithm)
+
+| Algorithm key                  | Policy  | Constraint                | Selection rule (deterministic)                           |
+| ------------------------------ | ------- | ------------------------- | -------------------------------------------------------- |
+| `tripo3d_v2p5_multi`           | min/max | **min 2, max 4**          | Take first up to 4 (A→Z prioritized, then lexicographic) |
+| `hunyuan3d_v2_multi`           | exact k | **exactly 3**             | Take first 3; skip if `< 3`                              |
+| `trellis_multi_stochastic`     | min/all | **min 2, no upper bound** | Use **all**; skip if `< 2`                               |
+| `trellis_multi_multidiffusion` | min/all | **min 2, no upper bound** | Use **all**; skip if `< 2`                               |
+| `rodin_multi`                  | min/all | **min 2, no upper bound** | Use **all**; skip if `< 2`                               |
+| `*_single` (all single keys)   | exact 1 | **exactly 1**             | Prefer `_A`, else first lexicographic; skip if none      |
+
+> Ordering is produced by the catalog; batch picks the earliest valid slice per policy for determinism.
+
+---
+
+## 7) Naming conventions (readable + collision-safe)
+
+### 7.1 Filenames (outputs, metrics, tokens)
+
+* **Core pattern:**
+  `{product_id}_{variantSlug? or ''}{underscore if empty}{algorithmKey}_N{num_img}_{imgSuffixes?}_{run_id}_h{hash8}`
+* **Examples:**
+
+  * `335888_curved-backrest_trellis_multi_stochastic_N3_A-B-C_2025-08-14_maximg_batch01_h1a2b3c4.glb`
+  * `353425__tripo3d_v2p5_multi_N2_A-B_2025-08-14_maximg_batch01_hd9e8f7a.json` (no variant → double underscore)
+
+### 7.2 Where they live
+
+* **Outputs (GLB placeholders):** `runs/<run_id>/outputs/<algo>/<core>.glb`
+* **Metrics sidecars:** `runs/<run_id>/metrics/<core>.json`
+* **Queue tokens:** `runs/<run_id>/queue/<core>.todo.json` → `.inprogress.<worker>.json` → `.completed.json | .failed.json`
+
+### 7.3 Safety rules (Windows/OneDrive)
+
+* `variantSlug`: ASCII, `[a-z0-9-]`, collapsed dashes, **≤32 chars**.
+* `imgSuffixes`: e.g., `A-B-C`, **≤20 chars**.
+* Filename soft cap **≤120 chars**; if exceeded, variant is truncated further.
+* A short unique tail `_h{hash8}` from the **SHA-1 job\_id** ensures uniqueness.
+
+---
+
+## 8) Job identity, idempotency, and queue safety
+
+### 8.1 `job_id` (deterministic)
+
+`SHA1("{algo}|{product_id}|{comma_join(image_files)}|{code_version}")`
+
+* Binds identity to inputs **and** `__version__`. Code upgrades naturally produce a new `job_id`.
+
+### 8.2 Deduplication rules (applied during `batch create`)
+
+* **Skip** if a **completed** row with the same `{run_id, job_id}` exists in `results.parquet`.
+* **Skip** if a token for this `{run_id, job_id}` is **already present** in the queue (any state).
+
+  > This preserves the original behavior and prevents double-enqueueing.
+* Otherwise, emit a new `*.todo.json` token.
+
+### 8.3 Atomic claim (worker)
+
+* Single atomic rename claim; any failure after claim gets recorded and the token ends in `.failed.json`.
+* Worker supports both **readable** pattern and **legacy** `*__{algo}__{hash8}.todo.json` for backward compatibility.
+
+---
+
+## 9) Data contracts
+
+### 9.1 `tables/items.csv` (catalog)
+
+| Column           | Type | Description                                             |
+| ---------------- | ---- | ------------------------------------------------------- |
+| `product_id`     | str  | Folder stem before optional ` - Variant`                |
+| `product_name`   | str  | Left blank (not derivable from FS; reserved)            |
+| `variant`        | str  | Text after `" - "` in folder name, else `""`            |
+| `n_images`       | int  | Count of valid images found                             |
+| `image_files`    | str  | `;`-separated relpaths under `dataset/…`                |
+| `gt_fbx_relpath` | str  | relpath under `dataset/…` (or empty if none)            |
+| `notes`          | str  | comma-separated issues (`no_images_dir`, `no_gt`, etc.) |
+
+Also written: `tables/items_issues.csv` (subset: `product_id, variant, notes`).
+
+### 9.2 `runs/<run_id>/manifest_inputs.csv`
+
+| Column           | Type | Description                         |
+| ---------------- | ---- | ----------------------------------- |
+| `product_id`     | str  |                                     |
+| `algo`           | str  | One of the configured keys          |
+| `image_set_csv`  | str  | `,`-joined relpaths used as inputs  |
+| `img_suffixes`   | str  | e.g., `A-B-C` (may be empty)        |
+| `n_images`       | int  | Count selected for this job         |
+| `gt_fbx_relpath` | str  | May be empty                        |
+| `job_id`         | str  | SHA-1 as defined above              |
+| `reason`         | str  | Empty if queued; else a skip reason |
+
+### 9.3 `tables/results.parquet` (append-only registry)
+
+| Column               | Type    | Description                               |
+| -------------------- | ------- | ----------------------------------------- |
+| `job_id`             | str     |                                           |
+| `run_id`             | str     |                                           |
+| `product_id`         | str     |                                           |
+| `algo`               | str     |                                           |
+| `image_set`          | str     | `,`-joined relpaths                       |
+| `n_images`           | int     |                                           |
+| `img_suffixes`       | str     | For readability/joins                     |
+| `status`             | str     | `completed` or `failed`                   |
+| `started_at`         | iso8601 | UTC                                       |
+| `finished_at`        | iso8601 | UTC                                       |
+| `duration_s`         | float   |                                           |
+| `output_glb_relpath` | str     | relpath under workspace (empty if none)   |
+| `worker`             | str     | identity                                  |
+| `error_msg`          | str     | only for `failed`                         |
+| `lpips`              | float?  | metrics placeholder (null until computed) |
+| `fscore`             | float?  | metrics placeholder (null until computed) |
+
+> **Locking:** writes guarded by `tables/results.parquet.lock` (`filelock`) for cross-user safety.
+
+### 9.4 Metrics sidecar JSON (placeholder)
+
+```json
+{
+  "job_id": "<sha1>",
+  "product_id": "335888",
+  "algo": "tripo3d_v2p5_multi",
+  "n_images": 3,
+  "image_suffixes": "A-B-C",
+  "run_id": "2025-08-14_maximg_batch01",
+  "code_version": "0.1.0",
+  "lpips": null,
+  "fscore": null,
+  "computed_at": "2025-08-14T10:11:12Z"
+}
+```
+
+---
+
+## 10) Dependencies & build
+
+**Runtime**
+
+* `typer>=0.12,<1.0`, `pydantic>=2.7,<3.0`, `pandas>=2.2,<3.0`, `pyarrow>=16,<18`,
+  `PyYAML>=6.0.1,<7.0`, `rich>=13,<14`, `filelock>=3.13,<4.0`, `platformdirs>=4,<5`,
+  `tqdm>=4.66,<5`, `packaging>=24,<25`.
+
+**Dev (extras)**
+
+* `ruff>=0.5,<0.7`, `black>=24,<25`, `mypy>=1.10,<2.0`, `pytest>=8,<9`, `pip-tools>=7.4,<8.0`.
+
+**Build system:** `hatchling>=1.25,<2.0`
+**Entry point:** `[project.scripts] archi3d = "archi3d.cli:app"`
+**License:** MIT
+**Python:** 3.11+
+**Lockfile (optional):** `uv pip compile` or `pip-compile` → commit `requirements.lock.txt`.
+
+---
+
+## 11) Runbook (smoke test)
+
+```powershell
+# 0) Configure workspace (choose one)
+$env:ARCHI3D_WORKSPACE="C:\Users\matti\Politecnico di Bari(1)\B4V - Archiproducts - General\Testing"
+# or create ~/.archi3d/config.yaml with the same path
+
+# 1) Catalog
+archi3d catalog build
+
+# 2) Batch (all algos, optional filter for a small first run)
+archi3d batch create --run-id 2025-08-14_maximg_batch01 --only 335888*
+
+# 3) Dry-run worker
+archi3d run worker --run-id 2025-08-14_maximg_batch01 --algo tripo3d_v2p5_multi --limit 2 --dry-run
+
+# 4) Execute a couple of placeholders
+archi3d run worker --run-id 2025-08-14_maximg_batch01 --algo tripo3d_v2p5_multi --limit 2
+
+# 5) Placeholder metrics
+archi3d metrics compute --run-id 2025-08-14_maximg_batch01
+
+# 6) Report
+archi3d report build --run-id 2025-08-14_maximg_batch01
+```
+
+**Verify:**
+
+* Readable token names in `runs/<run_id>/queue/…` with `_h<hash8>`.
+* `.glb` placeholders exist under `outputs/<algo>/`.
+* `results.parquet` has rows with `status=completed`, `img_suffixes`, and `output_glb_relpath`.
+* `reports/<run_id>/overview.yaml` & CSVs exist and look coherent.
+
+---
+
+## 12) Error handling & edge cases
+
+* **Missing workspace/dataset:** commands **fail fast** with clear messages.
+* **No images/GT:** catalog notes issues; batch may skip (`no_images`) but allows missing GT (metrics may be limited).
+* **Already completed/queued:** batch records skip reason and never emits duplicate tokens.
+* **Token races:** atomic rename guards multi-worker scenarios; workers gracefully skip if the token disappears.
+* **Path lengths:** enforced caps; variant truncation to stay under \~120 chars filename (OneDrive comfort zone).
+* **Legacy tokens:** worker accepts legacy naming while the ecosystem transitions to readable names.
+
+---
+
+## 13) Acceptance criteria (Step 1)
+
+* ✅ CLI commands exist and run without hard-coded system paths.
+* ✅ `catalog build` produces `items.csv` with sensible ordering and relpaths.
+* ✅ `batch create` enforces image policies and **never** double-queues; writes manifest + summary.
+* ✅ `run worker` processes tokens atomically, creates placeholder outputs/sidecars, and appends registry rows under lock.
+* ✅ `metrics compute` and `report build` complete without errors; reports include expected artifacts.
+* ✅ Filenames are human-readable and safe; idempotency and determinism upheld.
+
+---
+
+## 14) Open items & next steps (beyond Step 1)
+
+* **Adapters:** implement real model runners per algorithm; read token JSON, write real GLBs.
+* **Metrics:** integrate real LPIPS & F-score (illumination-robust); fill `lpips`/`fscore` columns and sidecars.
+* **Reporting:** add plots/figures and acceptance dashboards; compare runs.
+* **Retry policy:** exponential backoff and categorization of transient vs permanent failures.
+* **Provenance:** record per-adapter versions/parameters in token & registry.
+* **CI:** lint/type/test; smoke workflows on PRs.
+* **Path portability:** optional `workspace_map` to translate between machines if needed.
+
+---
+
+## 15) Appendix — Examples
+
+### 15.1 `global.yaml`
+
+```yaml
+algorithms:
+  - trellis_multi_stochastic
+  - trellis_multi_multidiffusion
+  - tripo3d_v2p5_multi
+  - rodin_multi
+  - hunyuan3d_v2_multi
+  - trellis_single
+  - tripoSR_single
+  - tripo3d_v2p5_single
+  - hunyuan3d_v2_single
+  - hunyuan3d_v2p1_single
+thresholds:
+  lpips_max: 0.15
+  fscore_min: 0.65
+```
+
+### 15.2 `~/.archi3d/config.yaml` (per-user)
+
+```yaml
+workspace: "C:\\Users\\matti\\Politecnico di Bari(1)\\B4V - Archiproducts - General\\Testing"
+```
+
+### 15.3 Token JSON (readable name; content stable)
+
+```json
+{
+  "job_id": "aa1b2c3d...sha1",
+  "run_id": "2025-08-14_maximg_batch01",
+  "product_id": "335888",
+  "algo": "tripo3d_v2p5_multi",
+  "image_files": [
+    "dataset/335888 - Curved backrest/images/LISA-WOOD-..._A.jpg",
+    "dataset/335888 - Curved backrest/images/LISA-WOOD-..._B.jpg",
+    "dataset/335888 - Curved backrest/images/LISA-WOOD-..._C.jpg"
+  ],
+  "gt_fbx_relpath": "dataset/335888 - Curved backrest/gt/Lisa-wood-....fbx",
+  "queued_at": "2025-08-14T09:12:33Z",
+  "code_version": "0.1.0"
+}
+```
+
+---
+
+### Ownership & licensing
+
+* **Author:** Mattia Tagliente
+* **Copyright:** © 2025 Mattia Tagliente
+* **License:** MIT

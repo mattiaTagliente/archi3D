@@ -1,0 +1,16 @@
+# Global (repo) configuration for Archi3D
+algorithms:
+  - trellis_multi_stochastic
+  - trellis_multi_multidiffusion
+  - tripo3d_v2p5_multi
+  - rodin_multi
+  - hunyuan3d_v2_multi
+  - trellis_single
+  - tripoSR_single
+  - tripo3d_v2p5_single
+  - hunyuan3d_v2_single
+  - hunyuan3d_v2p1_single
+
+thresholds:
+  lpips_max: 0.15
+  fscore_min: 0.65
