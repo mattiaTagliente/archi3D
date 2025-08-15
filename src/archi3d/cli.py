@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import Optional, List
+from datetime import datetime
 
 import typer
 from rich.console import Console
@@ -11,6 +12,15 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
+
+# --- ADD THIS DATE CHECK FUNCTION ---
+def _check_date():
+    """Blocks the program from running after a specific date."""
+    expiration_date = datetime(2025, 8, 31)
+    if datetime.now() > expiration_date:
+        console.print(Panel.fit("[red]ERROR[/red] This version of the program has expired."))
+        raise typer.Exit(code=1)
+# ------------------------------------
 
 app = typer.Typer(add_completion=False, help="Archi3D CLI")
 catalog_app = typer.Typer(help="Catalog operations")
@@ -80,6 +90,7 @@ def _root(
         None, "--version", "-V", help="Show version and exit", is_eager=True
     )
 ):
+    _check_date()
     if version:
         console.print(f"archi3d {__version__}")
         raise typer.Exit(0)
