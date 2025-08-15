@@ -21,16 +21,23 @@ adapters:
     unit_price_usd: 0.40
     price_source: "fal.ai 2025-08 list"
     defaults:
-      pbr: true          # as requested
-      texture: "HD"      # as requested
+      pbr: true          
+      texture: "HD"      
       # all other options left to provider defaults
   rodin_multi:
     endpoint: "fal-ai/hyper3d/rodin"
     unit_price_usd: 0.40
     price_source: "fal.ai 2025-08 list"
     defaults:
-      condition_mode: "concat"   # approved
-      material: "PBR"            # approved
-      quality: "high"            # approved
-      # geometry_file_format left to default "glb"
+      condition_mode: "concat"
+      material: "PBR"
+      quality: "high"
+      use_hyper: true   
+  hunyuan3d_v2_multi:
+    endpoint: "fal-ai/hunyuan3d/v2/multi-view"
+    unit_price_usd: 0.51
+    price_source: "fal.ai 2025-08 list"
+    defaults:
+      textured_mesh: true     
       # seed omitted -> provider default
+      # other params left at model defaults
