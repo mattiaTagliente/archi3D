@@ -1,4 +1,32 @@
-config.yaml
-prompt.txt
+# Python Virtual Environment
+.venv/
+venv/
+env/
+
+# Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build artifacts
+build/
+dist/
+obf/
+*.spec
+*.egg-info/
+
+# Local configuration and secrets
+# The .env file contains sensitive information and machine-specific paths
 .env
+# The config.yaml is a user-specific configuration file. A template is provided.
+config.yaml
+
+# Project-specific temporary/output files from your original .gitignore
+prompt.txt
 archi3d_010_PRD.txt
+
+# IDE, editor, and OS files
+.vscode/
+.idea/
+.DS_Store
