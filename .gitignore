@@ -16,13 +16,15 @@ obf/
 *.spec
 *.egg-info/
 
+# Python installation scripts (from editable installs)
+__entry_*.py
+install.py
+
 # Local configuration and secrets
-# The .env file contains sensitive information and machine-specific paths
 .env
-# The config.yaml is a user-specific configuration file. A template is provided.
 config.yaml
 
-# Project-specific temporary/output files from your original .gitignore
+# Project-specific temporary/output files
 prompt.txt
 archi3d_010_PRD.txt
 
