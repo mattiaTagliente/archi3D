@@ -41,3 +41,10 @@ adapters:
       textured_mesh: true     
       # seed omitted -> provider default
       # other params left at model defaults
+  trellis_single:
+    endpoint: "fal-ai/trellis"
+    unit_price_usd: 0.02
+    price_source: "fal.ai price sheet — 2025-08-18"
+    defaults:
+      texture_size: 2048  # keep other parameters at provider defaults
+
