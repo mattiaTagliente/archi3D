@@ -32,6 +32,8 @@ dependencies = [
   "platformdirs>=4,<5",
   "tqdm>=4.66,<5",
   "packaging>=24,<25",
+  "requests",
+  "fal-client"
 ]
 
 [project.optional-dependencies]
