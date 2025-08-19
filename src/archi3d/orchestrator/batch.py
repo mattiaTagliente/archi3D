@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import yaml
+from filelock import FileLock
 
 from archi3d import __version__
 from archi3d.config.paths import PathResolver
@@ -175,12 +176,12 @@ def create_batch(
     algorithms: List[str],
     paths: PathResolver,
     only: Optional[str] = None,
-) -> Path:
+) -> Tuple[Path, Dict]:
     """
     Create a run manifest and queue tokens under runs/<run_id>/queue/.
     Enforces per-algorithm image count constraints at batch time.
     Skips jobs already completed for the same (run_id, job_id).
-    Returns path to manifest_inputs.csv.
+    Returns path to manifest_inputs.csv and a summary dictionary.
     """
     paths.validate_expected_tree()
 
@@ -258,36 +259,43 @@ def create_batch(
                 ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "")
             )
 
-    # Write manifest
+    # write manifest inputs CSV
     manifest_path = paths.manifest_inputs_csv(run_id)
     mdf = pd.DataFrame(
         [r.__dict__ for r in manifest_rows],
         columns=[
-            "product_id",
-            "algo",
-            "image_set_csv",
-            "img_suffixes",
-            "n_images",
-            "gt_fbx_relpath",
-            "job_id",
-            "reason",
+            "product_id", "algo", "image_set_csv", "img_suffixes",
+            "n_images", "gt_fbx_relpath", "job_id", "reason",
         ],
     ).sort_values(["product_id", "algo"], kind="stable")
-    mdf.to_csv(manifest_path, index=False, encoding="utf-8")
 
-    # Also echo a compact summary next to it
-    summary_path = manifest_path.with_name("manifest_summary.yaml")
+    # Also create summary before writing files
     summary = {
         "run_id": run_id,
         "created_at": _now_iso(),
         "code_version": __version__,
+        "user_filter": only or "all",
+        "algorithms": algorithms,
         "counts": {
             "manifest_rows": int(mdf.shape[0]),
             "enqueued": int((mdf["reason"] == "").sum()),
             "skipped": int((mdf["reason"] != "").sum()),
         },
-        "skip_reasons": mdf["reason"].value_counts(dropna=False).to_dict(),
+        # Get counts for each skip reason, excluding empty reasons
+        "skip_reasons": mdf[mdf["reason"] != ""]["reason"].value_counts().to_dict(),
     }
-    summary_path.write_text(yaml.safe_dump(summary, sort_keys=False), encoding="utf-8")
 
-    return manifest_path
+    # Use a lock to prevent concurrent writes from multiple users
+    lock_path = manifest_path.with_suffix(".csv.lock")
+    with FileLock(str(lock_path)):
+        # Write the main manifest, overwriting to reflect the latest state
+        mdf.to_csv(manifest_path, index=False, encoding="utf-8")
+
+        # Append the summary to a historical log file
+        log_path = manifest_path.with_name("batch_creation_log.yaml")
+        with log_path.open("a", encoding="utf-8") as f:
+            # Separate entries with '---' for valid YAML stream
+            f.write("---\n")
+            yaml.safe_dump(summary, f, sort_keys=False)
+
+    return manifest_path, summary

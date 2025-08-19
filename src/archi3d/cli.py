@@ -145,7 +145,7 @@ def batch_create(
     cfg, paths = _load_runtime()
     try:
         from archi3d.orchestrator.batch import create_batch
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _fail(f"Missing module archi3d.orchestrator.batch (create_batch). Import error: {e!r}")
 
     all_algos = list(cfg.global_config.algorithms)
@@ -158,16 +158,40 @@ def batch_create(
     )
 
     try:
-        manifest_path = create_batch(
+        manifest_path, summary = create_batch(
             run_id=run_id,
             algorithms=selected,
             paths=paths,
             only=only,
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _fail(f"Batch creation failed: {e!r}")
 
-    console.print(f"[green]OK[/green] Manifest written at: {manifest_path}")
+    # Display a rich summary table in the terminal
+    counts = summary.get("counts", {})
+    enqueued = counts.get("enqueued", 0)
+    skipped = counts.get("skipped", 0)
+    total = counts.get("manifest_rows", 0)
+
+    console.print(f"\n[green]OK[/green] Manifest updated at: {manifest_path}")
+
+    summary_table = Table(title="Batch Creation Summary")
+    summary_table.add_column("Status", justify="left", style="cyan")
+    summary_table.add_column("Count", justify="right", style="magenta")
+    summary_table.add_row("[green]Jobs Queued[/green]", str(enqueued))
+    summary_table.add_row("[yellow]Jobs Skipped[/yellow]", str(skipped))
+    summary_table.add_row("Total Items Processed", str(total))
+    console.print(summary_table)
+
+    if skipped > 0:
+        skip_reasons = summary.get("skip_reasons", {})
+        if skip_reasons:
+            reasons_table = Table(title="Reasons for Skipped Jobs")
+            reasons_table.add_column("Reason", justify="left")
+            reasons_table.add_column("Count", justify="right")
+            for reason, count in skip_reasons.items():
+                reasons_table.add_row(reason, str(count))
+            console.print(reasons_table)
 
 # ---------------------------
 # run worker
