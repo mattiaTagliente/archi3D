@@ -66,3 +66,13 @@ adapters:
     defaults:
       textured_mesh: true          # enable textured mesh as requested
       # other parameters left at provider defaults (e.g., num_inference_steps=50, guidance_scale=7.5, octree_resolution=256)
+  hunyuan3d_v2p1_single:
+    endpoint: "fal-ai/hunyuan3d-v21"
+    unit_price_usd: 0.90
+    price_source: "fal.ai price sheet — 2025-08-18"
+    defaults:
+      textured_mesh: true   # enable textured mesh as requested
+      # other parameters left at provider defaults:
+      # num_inference_steps: 50
+      # guidance_scale: 7.5
+      # octree_resolution: 256
