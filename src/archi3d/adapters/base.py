@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Union
+import logging
 
 class AdapterTransientError(RuntimeError): ...
 class AdapterPermanentError(RuntimeError): ...
@@ -27,6 +28,9 @@ class ModelAdapter:
         self.cfg = cfg
         self.workspace = workspace
         self.logs_dir = logs_dir
+        # Create a logger specific to the adapter instance
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(logging.INFO)
 
     def unit_price_usd(self) -> float:
         return float(self.cfg.get("unit_price_usd", 0.0))
