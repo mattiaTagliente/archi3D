@@ -59,3 +59,10 @@ adapters:
     unit_price_usd: 0.07
     price_source: "fal.ai price sheet — 2025-08-18"
     defaults: {}  # all parameters at provider defaults
+  hunyuan3d_v2_single:
+    endpoint: "fal-ai/hunyuan3d/v2"
+    unit_price_usd: 0.48           # NB: textured_mesh=True implies 3× price vs white mesh
+    price_source: "fal.ai price sheet — 2025-08-18"
+    defaults:
+      textured_mesh: true          # enable textured mesh as requested
+      # other parameters left at provider defaults (e.g., num_inference_steps=50, guidance_scale=7.5, octree_resolution=256)
