@@ -47,4 +47,32 @@ adapters:
     price_source: "fal.ai price sheet — 2025-08-18"
     defaults:
       texture_size: 2048  # keep other parameters at provider defaults
-
+  tripo3d_v2p5_single:
+    endpoint: "tripo3d/tripo/v2.5/image-to-3d"  # per API docs
+    unit_price_usd: 0.40
+    price_source: "fal.ai price sheet — 2025-08-18"
+    defaults:
+      pbr: true
+      texture: "HD"  # HD textures requested; other params left to provider defaults
+  tripoSR_single:
+    endpoint: "fal-ai/triposr"  # Queue endpoint id; HTTP base is https://fal.run/fal-ai/triposr
+    unit_price_usd: 0.07
+    price_source: "fal.ai price sheet — 2025-08-18"
+    defaults: {}  # all parameters at provider defaults
+  hunyuan3d_v2_single:
+    endpoint: "fal-ai/hunyuan3d/v2"
+    unit_price_usd: 0.48           # NB: textured_mesh=True implies 3× price vs white mesh
+    price_source: "fal.ai price sheet — 2025-08-18"
+    defaults:
+      textured_mesh: true          # enable textured mesh as requested
+      # other parameters left at provider defaults (e.g., num_inference_steps=50, guidance_scale=7.5, octree_resolution=256)
+  hunyuan3d_v2p1_single:
+    endpoint: "fal-ai/hunyuan3d-v21"
+    unit_price_usd: 0.90
+    price_source: "fal.ai price sheet — 2025-08-18"
+    defaults:
+      textured_mesh: true   # enable textured mesh as requested
+      # other parameters left at provider defaults:
+      # num_inference_steps: 50
+      # guidance_scale: 7.5
+      # octree_resolution: 256
