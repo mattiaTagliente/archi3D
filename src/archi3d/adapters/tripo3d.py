@@ -67,9 +67,16 @@ class Tripo3DMultiV2p5Adapter(ModelAdapter):
 
         # 1) Resolve absolute paths and upload to fal CDN
         abs_paths = [self.workspace / rel for rel in token.image_files]
-        start_upload = time.monotonic()
-        image_urls = self._upload_images(abs_paths)
-        _ = time.monotonic() - start_upload  # reserved for future timings
+        try:
+            image_urls = self._upload_images(abs_paths)
+        except BaseException as e:
+            msg = f"[ERROR] Upload failed: {e!r}"
+            _write_line(log_file, msg)
+            sys.stderr.write(msg + "\n")
+            sys.stderr.flush()
+            if "FAL_KEY" in str(e) or "MissingCredentialsError" in e.__class__.__name__:
+                raise AdapterPermanentError("Missing fal.ai credentials (FAL_KEY or FAL_KEY_ID/FAL_KEY_SECRET)") from e
+            raise AdapterTransientError(f"Upload failed: {e}") from e
 
         # 2) Build arguments
         defaults: Dict[str, Any] = dict(cfg.get("defaults") or {})

@@ -37,10 +37,17 @@ class TrellisMultiAdapter(ModelAdapter):
         abs_paths = [self.workspace / rel for rel in token.image_files]
 
         # 2) Upload images to fal CDN.
-        start_upload = time.monotonic()
-        image_urls = self._upload_images(abs_paths)
-        _ = time.monotonic() - start_upload
-
+        try:
+            image_urls = self._upload_images(abs_paths)
+        except BaseException as e:
+            msg = f"[ERROR] Upload failed: {e!r}"
+            _write_line(log_file, msg)
+            sys.stderr.write(msg + "\n")
+            sys.stderr.flush()
+            if "FAL_KEY" in str(e) or "MissingCredentialsError" in e.__class__.__name__:
+                raise AdapterPermanentError("Missing fal.ai credentials (FAL_KEY or FAL_KEY_ID/FAL_KEY_SECRET)") from e
+            raise AdapterTransientError(f"Upload failed: {e}") from e
+        
         # 3) Build arguments from config defaults + uploads
         endpoint = str(algo_cfg["endpoint"])
         defaults: Dict[str, Any] = dict(algo_cfg.get("defaults") or {})
