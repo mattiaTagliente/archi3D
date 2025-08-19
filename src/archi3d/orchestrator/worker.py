@@ -28,6 +28,8 @@ from archi3d.config.adapters_cfg import load_adapters_cfg
 from archi3d.config.paths import PathResolver
 # Import the canonical function from batch.py
 from archi3d.orchestrator.batch import _compose_job_id
+from archi3d.utils.io import read_json
+from archi3d.utils.text import slugify
 
 
 # Matches trailing "_A.jpg" / "_B.png" (case-insensitive)
@@ -67,15 +69,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _slugify(text: str, max_len: int = 32) -> str:
-    """
-    Lowercase, keep [a-z0-9-], collapse dashes, trim to max_len.
-    """
-    t = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").lower()
-    t = re.sub(r"-{2,}", "-", t)
-    return t[:max_len]
-
-
 def _derive_variant_slug(product_id: str, first_image_rel: str) -> str:
     """
     first_image_rel looks like 'dataset/<folder_name>/images/<file>'
@@ -106,7 +99,8 @@ def _derive_variant_slug(product_id: str, first_image_rel: str) -> str:
     if " - " in folder_name:
         pid, var = folder_name.split(" - ", 1)
         if pid.strip() == product_id.strip():
-            return _slugify(var, max_len=32)
+            # CORRECTED: Removed the invalid max_len argument
+            return slugify(var)
     return ""
 
 
@@ -165,32 +159,42 @@ def _compose_output_names(
     run_id: str,
     algo: str,
     product_id: str,
-    variant_slug: str,
+    variant_slug: str, # This is already a slug
     n_images: int,
     img_suffixes: str,
-    job_id8: str,
-) -> Tuple[Path, Path]:
+    job_id8: str,) -> Tuple[Path, Path]:
     """
-    Build human-readable filenames with a short unique hash tail.
-    Ensures total filename length isn't excessive.
+    Build human-readable but filesystem-safe filenames.
     """
-    safe_variant = variant_slug  # already slugified
-    # Assemble core name parts
-    core = f"{product_id}_{safe_variant}_" if safe_variant else f"{product_id}__"
-    core += f"{algo}_N{n_images}"
-    if img_suffixes:
-        core += f"_{img_suffixes}"
-    core += f"_{run_id}_h{job_id8}"
+    # Slug individual dynamic parts to ensure safety
+    s_pid = slugify(product_id)
+    s_algo = slugify(algo)
+    s_suf = slugify(img_suffixes)
+    s_run = slugify(run_id)
 
-    # Enforce a soft cap on filename length for OneDrive friendliness
+    # Assemble core name parts
+    core = f"{s_pid}_{variant_slug}_" if variant_slug else f"{s_pid}__"
+    core += f"{s_algo}_N{n_images}"
+    if s_suf:
+        core += f"_{s_suf}"
+    core += f"_{s_run}_h{job_id8}"
+
+    # CORRECTED: Restore the intelligent soft-cap logic
+    # Enforce a soft cap on filename length for OS friendliness
     if len(core) > 120:
-        # truncate variant further if needed
-        parts = core.split("_")
-        # product_id, variant/blank, algo, N..., suffixes..., run_id, h...
-        # Try to shrink the second part (variant or empty)
-        if parts[1]:
-            parts[1] = parts[1][:16]
-        core = "_".join(parts)[:120]
+        # If too long, try to shrink the variant slug part first before a hard cut
+        # This preserves the product id and the unique hash at the end
+        if variant_slug:
+            excess = len(core) - 120
+            shorter_variant = variant_slug[: -excess - 1] # -1 for good measure
+            core = f"{s_pid}_{shorter_variant}_" if shorter_variant else f"{s_pid}__"
+            core += f"{s_algo}_N{n_images}"
+            if s_suf:
+                core += f"_{s_suf}"
+            core += f"_{s_run}_h{job_id8}"
+        # If it's still too long (or there was no variant), hard truncate
+        core = core[:120]
+
 
     glb_name = f"{core}.glb"
     json_name = f"{core}.json"
@@ -251,7 +255,8 @@ def run_worker(
         job_id, product_id, variant, image_files, img_suffixes = "", "", "", [], ""
 
         try:
-            token_json = json.loads(inprog.read_text(encoding="utf-8"))
+            # Use the new UTF-8 safe reader
+            token_json = read_json(inprog)
             job_id: str = token_json["job_id"]
             product_id: str = token_json["product_id"]
             variant: str = token_json.get("variant", "")

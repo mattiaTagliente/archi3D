@@ -16,6 +16,8 @@ from filelock import FileLock
 
 from archi3d import __version__
 from archi3d.config.paths import PathResolver
+from archi3d.utils.io import write_yaml, write_json
+from archi3d.utils.text import slugify
 
 
 @dataclass(frozen=True)
@@ -130,7 +132,8 @@ def _load_items_csv(paths: PathResolver) -> pd.DataFrame:
             f"items.csv not found at {p}.\n"
             "Run 'archi3d catalog build' first."
         )
-    return pd.read_csv(p, dtype=str).fillna("")
+    # Use pandas with explicit UTF-8-SIG encoding
+    return pd.read_csv(p, dtype=str, encoding='utf-8-sig').fillna("")
 
 
 def _existing_completed_for_run(paths: PathResolver, run_id: str) -> set[str]:
@@ -159,12 +162,21 @@ def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str) ->
 
 
 def _readable_token_name(product_id: str, algo: str, n_images: int, img_suffixes: str, run_id: str, job_id: str) -> str:
+    # Use the new slugify and hashing logic for safe filenames
     job8 = job_id[:8]
-    core = f"{product_id}_{algo}_N{n_images}"
-    if img_suffixes:
-        core += f"_{img_suffixes}"
-    core += f"_{run_id}_h{job8}"
-    return f"{core}.todo.json"
+    # Slug individual components to keep them clean
+    s_pid = slugify(product_id)
+    s_algo = slugify(algo)
+    s_run = slugify(run_id)
+    s_suf = slugify(img_suffixes)
+
+    core = f"{s_pid}_{s_algo}_N{n_images}"
+    if s_suf:
+        core += f"_{s_suf}"
+    core += f"_{s_run}_h{job8}"
+    
+    # Enforce a max length for the entire filename core
+    return f"{core[:120]}.todo.json"
 
 
 # -------------------------------
@@ -193,7 +205,8 @@ def create_batch(
         "code_version": __version__,
         "algorithms": algorithms,
     }
-    run_cfg_path.write_text(yaml.safe_dump(run_cfg, sort_keys=False), encoding="utf-8")
+    # Use the new helper
+    write_yaml(run_cfg_path, run_cfg)
 
     items = _load_items_csv(paths)
     if only:
@@ -253,7 +266,8 @@ def create_batch(
                 "code_version": __version__,
             }
             token_name = _readable_token_name(product_id, algo, len(selected), img_suffixes, run_id, job_id)
-            (queue_dir / token_name).write_text(json.dumps(token, indent=2), encoding="utf-8")
+            # Use the new helper
+            write_json(queue_dir / token_name, token)
 
             manifest_rows.append(
                 ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "")
@@ -289,13 +303,14 @@ def create_batch(
     lock_path = paths.manifest_lock_path(run_id)
     with FileLock(str(lock_path)):
         # Write the main manifest, overwriting to reflect the latest state
-        mdf.to_csv(manifest_path, index=False, encoding="utf-8")
+        # Use pandas with explicit UTF-8-SIG encoding for Excel compatibility
+        mdf.to_csv(manifest_path, index=False, encoding="utf-8-sig")
 
         # Append the summary to a historical log file
         log_path = manifest_path.with_name("batch_creation_log.yaml")
         with log_path.open("a", encoding="utf-8") as f:
             # Separate entries with '---' for valid YAML stream
             f.write("---\n")
-            yaml.safe_dump(summary, f, sort_keys=False)
+            yaml.safe_dump(summary, f, allow_unicode=True, sort_keys=False)
 
     return manifest_path, summary
