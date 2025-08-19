@@ -11,7 +11,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import requests
@@ -213,23 +213,25 @@ def run_worker(
     limit: int,
     dry_run: bool,
     paths: PathResolver,
-) -> int:
+) -> Dict[str, int]:
     """
     Process up to `limit` tokens for the given run+algo.
     Implements an integrity check to ensure job tokens are not corrupt.
-    Returns the number of jobs processed.
+    Returns a dictionary with counts of processed, completed, and failed jobs.
     """
     paths.validate_expected_tree()
     queue_dir = paths.queue_dir(run_id)
     tokens = _select_tokens(queue_dir, run_id, algo)
     if not tokens:
-        return 0
+        return {"processed": 0, "completed": 0, "failed": 0}
 
     if dry_run:
-        return min(limit, len(tokens))
+        return {"processed": min(limit, len(tokens)), "completed": 0, "failed": 0}
 
     worker_id = os.environ.get("ARCHI3D_WORKER_ID") or getpass.getuser()
     processed = 0
+    completed_count = 0
+    failed_count = 0
 
     repo_root = Path(__file__).resolve().parents[2]
     ADAPTERS_CFG = load_adapters_cfg(repo_root).get("adapters", {})
@@ -404,8 +406,14 @@ def run_worker(
             }
             _writerow_locked(paths, row)
 
-            # Mark completed
-            _rename_atomic(inprog, "completed")
+            # Mark final state and report a concise line to the terminal
+            _rename_atomic(inprog, status)
+            if status == "completed":
+                completed_count += 1
+            else:
+                failed_count += 1
+                # Minimal operator feedback; keep it one line to avoid noise
+                print(f"[ERROR] {tok.product_id}/{algo}/{tok.job_id} failed → {error_msg}")
 
         except Exception as e:
             logging.error(f"Worker failed on token {inprog.name}: {e!r}")
@@ -452,4 +460,6 @@ def run_worker(
 
         processed += 1
 
-    return processed
+    # One-line end-of-run summary
+    print(f"Summary: completed={completed_count}  failed={failed_count}  processed={processed}")
+    return {"processed": processed, "completed": completed_count, "failed": failed_count}

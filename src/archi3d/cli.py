@@ -200,7 +200,7 @@ def run_worker(
     )
 
     try:
-        processed = _run_worker(
+        result = _run_worker(
             run_id=run_id,
             algo=algo,
             limit=limit,
@@ -210,7 +210,15 @@ def run_worker(
     except Exception as e:  # noqa: BLE001
         _fail(f"Worker failed: {e!r}")
 
-    console.print(f"[green]Done[/green] Processed: {processed} job(s).")
+    if isinstance(result, dict):
+        console.print(
+            f"[green]Done[/green] Completed: {result.get('completed', 0)} • "
+            f"Failed: {result.get('failed', 0)} • "
+            f"Processed: {result.get('processed', 0)}."
+        )
+    else:
+        console.print(f"[green]Done[/green] Processed: {result} job(s).")
+
 
 # ---------------------------
 # metrics compute
