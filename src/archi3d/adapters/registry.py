@@ -7,7 +7,7 @@ from archi3d.adapters.rodin import RodinMultiAdapter
 from archi3d.adapters.hunyuan3d import Hunyuan3DMultiviewV2Adapter
 from archi3d.adapters.trellis_single import TrellisSingleAdapter
 from archi3d.adapters.tripo3d_v2p5_single import Tripo3DSingleV2p5Adapter
-from archi3d.adapters.triposr_single import TripoSRSingleAdapter
+from archi3d.adapters.tripoSR_single import TripoSRSingleAdapter
 
 REGISTRY: Dict[str, Type[ModelAdapter]] = {
     "trellis_multi_stochastic": TrellisMultiAdapter,
@@ -17,6 +17,6 @@ REGISTRY: Dict[str, Type[ModelAdapter]] = {
     "hunyuan3d_v2_multi": Hunyuan3DMultiviewV2Adapter,
     "trellis_single": TrellisSingleAdapter,
     "tripo3d_v2p5_single": Tripo3DSingleV2p5Adapter,
-    "triposr_single": TripoSRSingleAdapter,
+    "tripoSR_single": TripoSRSingleAdapter,
     # other keys will be added later
 }
