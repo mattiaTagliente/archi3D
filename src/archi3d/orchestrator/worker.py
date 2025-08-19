@@ -146,24 +146,19 @@ def _rename_atomic(p: Path, new_suffix: str) -> Path:
     return target
 
 
-def _writerow_locked(paths: PathResolver, row: dict) -> None:
+def _write_result_staging(paths: PathResolver, row: dict) -> None:
     """
-    Append (by read-append-write) under a filesystem lock for safety across machines.
+    Writes a single job's result to a unique parquet file in a staging directory.
+    This avoids locks and race conditions entirely.
     """
-    lock_path = paths.results_parquet.with_suffix(".parquet.lock")
-    with FileLock(str(lock_path)):
-        # Check if the results file exists and has content
-        if paths.results_parquet.exists() and paths.results_parquet.stat().st_size > 0:
-            df = pd.read_parquet(paths.results_parquet)
-            # Create a DataFrame for the new row
-            new_row_df = pd.DataFrame([row])
-            # Concatenate the existing DataFrame with the new row
-            df = pd.concat([df, new_row_df], ignore_index=True)
-        else:
-            # If the file doesn't exist or is empty, create a new DataFrame from the first row
-            df = pd.DataFrame([row])
+    staging_dir = paths.results_staging_dir()
+    # Create a unique filename based on the job ID to prevent any conflicts.
+    job_id = row.get("job_id", "unknown_job")
+    output_path = staging_dir / f"{job_id}.parquet"
 
-        df.to_parquet(paths.results_parquet, index=False)
+    # Convert the single row to a DataFrame and save.
+    df = pd.DataFrame([row])
+    df.to_parquet(output_path, index=False)
 
 
 def _compose_output_names(
@@ -404,7 +399,7 @@ def run_worker(
                 ),  # one call per job
                 "price_source": str(algo_cfg.get("price_source", "unknown")),
             }
-            _writerow_locked(paths, row)
+            _write_result_staging(paths, row)
 
             # Mark final state and report a concise line to the terminal
             _rename_atomic(inprog, status)
@@ -450,7 +445,7 @@ def run_worker(
                     estimated_cost_usd=0.0,
                     price_source="unknown",
                 )
-                _writerow_locked(paths, asdict(row))
+                _write_result_staging(paths, asdict(row))
             finally:
                 # Mark failed
                 try:

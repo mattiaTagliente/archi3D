@@ -76,6 +76,24 @@ class PathResolver:
         out.mkdir(parents=True, exist_ok=True)
         return out
 
+    def results_staging_dir(self) -> Path:
+        """A directory for workers to write unique, per-job result files."""
+        p = self.tables_dir / "results_staging"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def manifest_lock_path(self, run_id: str) -> Path:
+        """Returns the path for the manifest lock file within a dedicated locks subdir."""
+        locks_dir = self.run_dir(run_id) / "locks"
+        locks_dir.mkdir(parents=True, exist_ok=True)
+        return locks_dir / "manifest_inputs.csv.lock"
+
+    def results_lock_path(self) -> Path:
+        """Returns the path for the results lock file within a dedicated locks subdir."""
+        locks_dir = self.tables_dir / "locks"
+        locks_dir.mkdir(parents=True, exist_ok=True)
+        return locks_dir / "results.parquet.lock"
+
     # -------------------------
     # Utilities
     # -------------------------

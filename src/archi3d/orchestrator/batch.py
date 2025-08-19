@@ -286,7 +286,7 @@ def create_batch(
     }
 
     # Use a lock to prevent concurrent writes from multiple users
-    lock_path = manifest_path.with_suffix(".csv.lock")
+    lock_path = paths.manifest_lock_path(run_id)
     with FileLock(str(lock_path)):
         # Write the main manifest, overwriting to reflect the latest state
         mdf.to_csv(manifest_path, index=False, encoding="utf-8")

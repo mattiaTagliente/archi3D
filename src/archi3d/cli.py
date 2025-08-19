@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 
+import pandas as pd
 import typer
+from filelock import FileLock
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -23,7 +25,7 @@ def _check_date():
 # ------------------------------------
 
 app = typer.Typer(add_completion=False, help="Archi3D CLI")
-catalog_app = typer.Typer(help="Catalog operations")
+catalog_app = typer.Typer(help="Catalog and data operations")
 batch_app = typer.Typer(help="Batch orchestration")
 run_app = typer.Typer(help="Run workers")
 metrics_app = typer.Typer(help="Metrics computation")
@@ -128,6 +130,55 @@ def catalog_build():
     table.add_column("With ≥1 image", justify="right")
     table.add_row(str(stats.items_total), str(stats.items_with_gt), str(stats.items_with_img))
     console.print(table)
+
+# ---------------------------
+# catalog consolidate
+# ---------------------------
+
+@catalog_app.command("consolidate")
+def catalog_consolidate():
+    """
+    Consolidate staged results into the main tables/results.parquet file.
+    """
+    _, paths = _load_runtime()
+    
+    staging_dir = paths.results_staging_dir()
+    main_results_path = paths.results_parquet
+    
+    staged_files = list(staging_dir.glob("*.parquet"))
+    
+    if not staged_files:
+        console.print("[yellow]No new results found in the staging area to consolidate.[/yellow]")
+        raise typer.Exit()
+
+    console.print(f"Found {len(staged_files)} new result file(s) to consolidate.")
+
+    # Read all staged files into a list of DataFrames
+    df_list = [pd.read_parquet(f) for f in staged_files]
+    new_results_df = pd.concat(df_list, ignore_index=True)
+
+    # Use the results lock to safely update the main file
+    lock_path = paths.results_lock_path()
+    with FileLock(str(lock_path)):
+        if main_results_path.exists():
+            console.print("Appending new results to existing tables/results.parquet...")
+            existing_df = pd.read_parquet(main_results_path)
+            # Drop duplicates, keeping the most recent entry for a given job_id
+            combined_df = pd.concat([existing_df, new_results_df], ignore_index=True)
+            combined_df.drop_duplicates(subset=['job_id'], keep='last', inplace=True)
+        else:
+            console.print("Creating new tables/results.parquet...")
+            combined_df = new_results_df
+            
+        combined_df.to_parquet(main_results_path, index=False)
+
+    console.print(f"[green]Successfully consolidated results into {main_results_path}[/green]")
+    
+    # Optional: Clean up staged files after consolidation
+    console.print("Cleaning up staged files...")
+    for f in staged_files:
+        f.unlink()
+    console.print("Done.")
 
 # ---------------------------
 # batch create

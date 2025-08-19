@@ -1,35 +1,188 @@
-<h1>Archi3D: Image-to-3D Experiment Orchestrator</h1><p>Archi3D is a command-line tool designed to orchestrate and manage large-scale 2D-to-3D model generation experiments in a way that is reproducible, scalable, and safe for multiple developers working in a shared environment.</p><h2>► What is Archi3D?</h2><p>This project provides a robust framework for benchmarking state-of-the-art Image-to-3D conversion algorithms. It automates the entire experimental pipeline:</p><ol><li><p><strong>Cataloging</strong> a dataset of product images and ground truth models.</p></li><li><p><strong>Creating</strong> batches of jobs based on specific algorithms and image selection policies.</p></li><li><p><strong>Executing</strong> these jobs in a controlled manner, preventing duplicate work.</p></li><li><p><strong>Collecting</strong> results and computing metrics.</p></li><li><p><strong>Generating</strong> reports for analysis.</p></li></ol><p>The entire system is built to work seamlessly over a shared network drive (like OneDrive or Google Drive), making collaboration easy and reliable.</p><h2>✨ Core Features</h2><ul><li><p><strong>Typer-based CLI</strong>: A clean, modern command-line interface with 5 main commands: <code>catalog</code>, <code>batch</code>, <code>run</code>, <code>metrics</code>, and <code>report</code>.</p></li><li><p><strong>Layered Configuration</strong>: A flexible configuration system that merges settings from a global <code>global.yaml</code>, a per-user <code>~/.archi3d/config.yaml</code>, and environment variables.</p></li><li><p><strong>Idempotent Job Creation</strong>: The system intelligently skips jobs that have already been queued or completed, preventing redundant work and wasted resources.</p></li><li><p><strong>Multi-User Safety</strong>: Uses atomic file-renames and file-locking to ensure that multiple developers can run workers simultaneously without interfering with each other.</p></li><li><p><strong>Reproducible Runs</strong>: Each experiment run is version-controlled and produces deterministic outputs, ensuring results can be reproduced reliably.</p></li><li><p><strong>Human-Readable Artifacts</strong>: Generates clearly named files and directories, making it easy to navigate and inspect the outputs of any given run.</p></li></ul><h2>🚀 Getting Started</h2><p>Follow these steps to set up your local development environment and run your first experiment.</p><h3>Prerequisites</h3><p>Make sure you have the following software installed on your system:</p><ul><li><p><strong>Python</strong> (version 3.11 or higher)</p></li><li><p><strong>uv</strong>: A fast, modern Python package installer and resolver. If you don't have it, install it with:</p><pre><code>pip install uv
-<br class="ProseMirror-trailingBreak"></code></pre></li><li><p><strong>Git</strong>: For cloning the project repository.</p></li></ul><h3>1. Clone the Repository</h3><p>First, clone the project code to your local machine.</p><pre><code>git clone &lt;your-repository-url&gt;
+# Archi3D: Image-to-3D Experiment Orchestrator
+
+Archi3D is a command-line tool designed to orchestrate and manage large-scale 2D-to-3D model generation experiments in a way that is reproducible, scalable, and safe for multiple developers working in a shared environment.
+
+## ► What is Archi3D?
+
+This project provides a robust framework for benchmarking state-of-the-art Image-to-3D conversion algorithms. It automates the entire experimental pipeline:
+
+1.  **Cataloging** a dataset of product images and ground truth models.
+2.  **Creating** batches of jobs based on specific algorithms and image selection policies.
+3.  **Executing** these jobs concurrently, preventing data corruption and conflicts.
+4.  **Consolidating** distributed results into a master dataset.
+5.  **Generating** reports for analysis.
+
+The entire system is built to work seamlessly over a shared network drive (like OneDrive or Google Drive), making collaboration easy and reliable.
+
+## ✨ Core Features
+
+  * **Typer-based CLI**: A clean, modern command-line interface with commands for each step of the workflow: `catalog`, `batch`, `run`, `metrics`, and `report`.
+  * **Layered Configuration**: A flexible configuration system that merges settings from a global `global.yaml`, a per-user `~/.archi3d/config.yaml`, and environment variables.
+  * **Idempotent Job Creation**: The system intelligently skips jobs that have already been queued or completed, preventing redundant work and wasted resources.
+  * **Conflict-Free Concurrent Execution**: Designed for multi-user safety. Workers write results to a staging area in unique, isolated files. This avoids the race conditions and file corruption common with cloud-sync services, allowing dozens of developers to run workers simultaneously without interfering with each other.
+  * **Reproducible Runs**: Each experiment run is version-controlled and produces deterministic outputs, ensuring results can be reproduced reliably.
+  * **Human-Readable Artifacts**: Generates clearly named files and directories, making it easy to navigate and inspect the outputs of any given run.
+
+## 🚀 Getting Started
+
+Follow these steps to set up your local development environment and run your first experiment.
+
+### Prerequisites
+
+Make sure you have the following software installed on your system:
+
+  * **Python** (version 3.11 or higher)
+  * **uv**: A fast, modern Python package installer and resolver. If you don't have it, install it with:
+    ```
+    pip install uv
+    ```
+  * **Git**: For cloning the project repository.
+
+### 1\. Clone the Repository
+
+First, clone the project code to your local machine.
+
+```
+git clone <your-repository-url>
 cd archi3d
-<br class="ProseMirror-trailingBreak"></code></pre><h3>2. Set Up the Workspace</h3><p>Archi3D operates on a central "workspace" directory that is shared among all developers (e.g., a folder in OneDrive).</p><p>Create the following folder structure inside your shared workspace:</p><pre><code>Testing/
+```
+
+### 2\. Set Up the Workspace
+
+Archi3D operates on a central "workspace" directory that is shared among all developers (e.g., a folder in OneDrive).
+
+Create the following folder structure inside your shared workspace:
+
+```
+Testing/
 ├── dataset/
 ├── reports/
 ├── runs/
 └── tables/
-<br class="ProseMirror-trailingBreak"></code></pre><p>Next, you must tell Archi3D where to find this workspace. The recommended way is to use a <code>.env</code> file.</p><ol><li><p><strong>Create a <code>.env</code> file</strong> in the root of the project by copying the example template:</p><pre><code># In PowerShell
-copy .env.example .env
-<br class="ProseMirror-trailingBreak"></code></pre></li><li><p><strong>Edit the <code>.env</code> file</strong> and set the <code>ARCHI3D_WORKSPACE</code> variable to the <strong>absolute path</strong> of your <code>Testing</code> folder. <strong>Use forward slashes (<code>/</code>) for the path.</strong></p><pre><code># .env
-ARCHI3D_WORKSPACE="C:/Users/matti/Politecnico di Bari(1)/B4V - Archiproducts - General/Testing"
-<br class="ProseMirror-trailingBreak"></code></pre><blockquote><p><strong>Note:</strong> The <code>.env</code> file is ignored by Git, so your local path will not be committed to the repository.</p></blockquote></li></ol><h3>3. Set Up the Python Environment</h3><p>We will use <code>uv</code> to create an isolated virtual environment for the project.</p><ol><li><p><strong>Create the virtual environment</strong> (this only needs to be done once):</p><pre><code>uv venv
-<br class="ProseMirror-trailingBreak"></code></pre></li><li><p><strong>Activate the environment</strong>. You must do this every time you open a new terminal to work on the project.</p><pre><code># On Windows PowerShell
-.venv\Scripts\Activate.ps1
-<br class="ProseMirror-trailingBreak"></code></pre><p>Your terminal prompt should now be prefixed with <code>(.venv)</code>.</p></li></ol><h3>4. Install Dependencies</h3><p>Install all required packages using the <code>requirements.lock.txt</code> file. This ensures every developer has the exact same version of every dependency, guaranteeing reproducibility.</p><p>This command also installs the <code>archi3d</code> project itself in <strong>editable mode</strong> (<code>-e</code>), meaning any changes you make to the source code are immediately available without reinstalling.</p><pre><code>uv pip install -r requirements.lock.txt -e .
-<br class="ProseMirror-trailingBreak"></code></pre><p>You are now ready to use the application!</p><h2>🛠️ Usage: The Experiment Workflow</h2><p>The <code>archi3d</code> CLI guides you through the entire experiment process. Run these commands in order from the project's root directory.</p><p><strong>1. Build the Item Catalog</strong></p><p>Scan the <code>workspace/dataset/</code> folder to create an inventory of all products, images, and ground truth models. This creates <code>tables/items.csv</code>.</p><pre><code>archi3d catalog build
-<br class="ProseMirror-trailingBreak"></code></pre><p><strong>2. Create a Batch of Jobs</strong></p><p>Define a new experiment run. This command reads <code>tables/items.csv</code> and creates a queue of jobs to be processed.</p><ul><li><p><code>--run-id</code>: Give your experiment a unique name.</p></li><li><p><code>--only</code>: (Optional) A filter to run the experiment on a small subset of products, perfect for testing.</p></li></ul><pre><code>archi3d batch create --run-id "initial-test-run" --only "335888*"
-<br class="ProseMirror-trailingBreak"></code></pre><p>This will create a new folder under <code>workspace/runs/initial-test-run/</code> containing the job queue.</p><p><strong>3. Run a Worker to Process Jobs</strong></p><p>Execute the jobs waiting in the queue for a specific algorithm. The worker will claim a job, create a placeholder output, and record the result.</p><pre><code>archi3d run worker --run-id "initial-test-run" --algo "tripo3d_v2p5_multi" --limit 5
-<br class="ProseMirror-trailingBreak"></code></pre><p><strong>4. Compute Metrics</strong></p><p>After jobs are completed, run this command to generate placeholder metric files for each output.</p><pre><code>archi3d metrics compute --run-id "initial-test-run"
-<br class="ProseMirror-trailingBreak"></code></pre><p><strong>5. Build the Report</strong></p><p>Finally, consolidate all the results from the run into a set of summary reports (<code>overview.yaml</code>, <code>by_algo.csv</code>, etc.) in the <code>workspace/reports/initial-test-run/</code> directory.</p><pre><code>archi3d report build --run-id "initial-test-run"
-<br class="ProseMirror-trailingBreak"></code></pre><p>You have now completed a full end-to-end run of the experiment pipeline! You can inspect the generated files in your shared workspace to see the results.</p><h2>📂 Project Structure</h2><pre><code>├── archi3d/                  # The main Python source code package
+```
+
+Next, you must tell Archi3D where to find this workspace. The recommended way is to use a `.env` file.
+
+1.  **Create a `.env` file** in the root of the project by copying the example template:
+    ```powershell
+    # In PowerShell
+    copy .env.example .env
+    ```
+2.  **Edit the `.env` file** and set the `ARCHI3D_WORKSPACE` variable to the **absolute path** of your `Testing` folder. **Use forward slashes (`/`) for the path.**
+    ```
+    # .env
+    ARCHI3D_WORKSPACE="C:/Users/matti/Politecnico di Bari(1)/B4V - Archiproducts - General/Testing"
+    ```
+    > **Note:** The `.env` file is ignored by Git, so your local path will not be committed to the repository.
+
+### 3\. Set Up the Python Environment
+
+We will use `uv` to create an isolated virtual environment for the project.
+
+1.  **Create the virtual environment** (this only needs to be done once):
+    ```
+    uv venv
+    ```
+2.  **Activate the environment**. You must do this every time you open a new terminal to work on the project.
+    ```powershell
+    # On Windows PowerShell
+    .venv\Scripts\Activate.ps1
+    ```
+    Your terminal prompt should now be prefixed with `(.venv)`.
+
+### 4\. Install Dependencies
+
+Install all required packages using the `requirements.lock.txt` file. This ensures every developer has the exact same version of every dependency, guaranteeing reproducibility.
+
+This command also installs the `archi3d` project itself in **editable mode** (`-e`), meaning any changes you make to the source code are immediately available without reinstalling.
+
+```
+uv pip install -r requirements.lock.txt -e .
+```
+
+You are now ready to use the application\!
+
+## 🛠️ Usage: The Experiment Workflow
+
+The `archi3d` CLI guides you through the entire experiment process. Run these commands in order from the project's root directory.
+
+**1. Build the Item Catalog**
+
+Scan the `workspace/dataset/` folder to create an inventory of all products, images, and ground truth models. This creates `tables/items.csv`.
+
+```
+archi3d catalog build
+```
+
+**2. Create a Batch of Jobs**
+
+Define a new experiment run. This command reads `tables/items.csv` and creates a queue of jobs to be processed, providing a detailed summary of how many jobs were created and how many were skipped (and why).
+
+  * `--run-id`: Give your experiment a unique name.
+  * `--only`: (Optional) A filter to run the experiment on a small subset of products, perfect for testing.
+
+<!-- end list -->
+
+```
+archi3d batch create --run-id "initial-test-run" --only "335888*"
+```
+
+This will create a new folder under `workspace/runs/initial-test-run/` containing the job queue and a historical log of all batch creation operations.
+
+**3. Run a Worker to Process Jobs**
+
+Execute the jobs waiting in the queue. Multiple users can run workers simultaneously without conflict. Each completed job will generate a unique result file in the `tables/results_staging/` directory.
+
+```
+archi3d run worker --run-id "initial-test-run" --algo "tripo3d_v2p5_multi" --limit 5
+```
+
+**4. Consolidate Results**
+
+Before you can compute metrics or build reports, you must consolidate the individual result files from the staging area into the main `tables/results.parquet` file.
+
+```
+archi3d catalog consolidate
+```
+
+This command safely gathers all new results, merges them into the master table, and cleans up the staging area.
+
+**5. Compute Metrics**
+
+After consolidating, run this command to generate placeholder metric files for each new output.
+
+```
+archi3d metrics compute --run-id "initial-test-run"
+```
+
+**6. Build the Report**
+
+Finally, consolidate all the results from the run into a set of summary reports (`overview.yaml`, `by_algo.csv`, etc.) in the `workspace/reports/initial-test-run/` directory.
+
+```
+archi3d report build --run-id "initial-test-run"
+```
+
+You have now completed a full end-to-end run of the experiment pipeline\! You can inspect the generated files in your shared workspace to see the results.
+
+## 📂 Project Structure
+
+```
+├── archi3d/                  # The main Python source code package
+│   ├── adapters/             # Connectors to 3D generation APIs
 │   ├── config/               # Configuration models and loaders
 │   ├── io/                   # Data input/output (e.g., catalog builder)
 │   ├── metrics/              # Metrics computation logic
 │   ├── orchestrator/         # Core logic for batching and running jobs
 │   ├── reporting/            # Report generation logic
-│   ├── cli.py                # Typer CLI application definition
-│   └── ...
+│   └── cli.py                # Typer CLI application definition
 ├── .env.example              # Template for environment variables
 ├── global.yaml               # Global, project-wide configuration
 ├── pyproject.toml            # Central project definition and dependencies
 ├── requirements.lock.txt     # Pinned versions for reproducible installs
 └── README.md                 # This file
-<br class="ProseMirror-trailingBreak"></code></pre><h2>⚖️ License</h2><p>This project is licensed under the MIT License. See the <code>LICENSE</code> file for details.</p>
+```
+
+## ⚖️ License
+
+This project is licensed under the MIT License. See the `LICENSE` file for details.
