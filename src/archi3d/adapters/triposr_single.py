@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -26,18 +25,16 @@ class TripoSRSingleAdapter(ModelAdapter):
     Single-image adapter for fal-ai/triposr.
 
     Input:
-      - image_url (string) — single image URL. :contentReference[oaicite:2]{index=2}
+      - image_url (string) — single image URL.
 
-    Output (per provider schema):
-      - model_mesh.url (required) — generated 3D object file. :contentReference[oaicite:3]{index=3}
+    Output:
+      - model_mesh.url — generated 3D object file.
     """
 
     def _upload_image(self, abs_image_path: Path) -> str:
-        # Uploads to fal temporary storage and returns a signed URL
         return fal_client.upload_file(abs_image_path)
 
     def _download_file(self, url: str, out_path: Path) -> None:
-        # Not used currently; kept for parity and potential future local caching
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with requests.get(url, stream=True, timeout=120) as r:
             r.raise_for_status()
@@ -47,11 +44,17 @@ class TripoSRSingleAdapter(ModelAdapter):
                         f.write(chunk)
 
     def execute(self, token: Token, deadline_s: int = 480) -> ExecResult:
-        cfg = self.cfg
-        endpoint = str(cfg["endpoint"])  # expected: "fal-ai/triposr" :contentReference[oaicite:4]{index=4}
+        cfg = self.cfg or {}
+        endpoint = cfg.get("endpoint")
+        if not endpoint:
+            raise AdapterPermanentError(
+                "Missing configuration for 'tripoSR_single': please add a block in adapters.yaml with "
+                "endpoint: 'fal-ai/triposr', unit_price_usd, price_source, and defaults: {}"
+            )
+
         log_file = self.logs_dir / f"{token.product_id}_{token.algo}_{token.job_id}.log"
 
-        # 1) Expect exactly one image (batch policy ensures this)
+        # 1) Expect exactly one image
         if not token.image_files:
             raise AdapterPermanentError("No image provided to single-image adapter")
         abs_path = self.workspace / token.image_files[0]
@@ -68,7 +71,7 @@ class TripoSRSingleAdapter(ModelAdapter):
                 raise AdapterPermanentError("Missing fal.ai credentials (FAL_KEY or FAL_KEY_ID/FAL_KEY_SECRET)") from e
             raise AdapterTransientError(f"Upload failed: {e}") from e
 
-        # 3) Build arguments: TripoSR takes 'image_url'; we pass only provider defaults. :contentReference[oaicite:5]{index=5}
+        # 3) Build arguments (all provider defaults)
         defaults: Dict[str, Any] = dict(cfg.get("defaults") or {})
         arguments: Dict[str, Any] = {**defaults, "image_url": image_url}
 
@@ -89,7 +92,7 @@ class TripoSRSingleAdapter(ModelAdapter):
         def _runner():
             try:
                 res = fal_client.subscribe(
-                    endpoint,
+                    str(endpoint),
                     arguments=arguments,
                     with_logs=True,
                     on_queue_update=on_queue_update,
@@ -117,7 +120,7 @@ class TripoSRSingleAdapter(ModelAdapter):
             sys.stderr.flush()
             raise AdapterTransientError(str(err_container["e"]))
 
-        # 5) Parse output (expect model_mesh.url; fallbacks tolerated)
+        # 5) Parse output
         result = result_container
 
         def _pick_url(d: Dict[str, Any] | None) -> str | None:
@@ -133,3 +136,4 @@ class TripoSRSingleAdapter(ModelAdapter):
 
         _write_line(log_file, f"[ERROR] Unexpected response: {json.dumps(result)[:2000]}")
         raise AdapterPermanentError("Unexpected output format (missing model_mesh.url)")
+

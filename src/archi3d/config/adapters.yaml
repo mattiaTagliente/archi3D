@@ -54,7 +54,7 @@ adapters:
     defaults:
       pbr: true
       texture: "HD"  # HD textures requested; other params left to provider defaults
-  triposr_single:
+  tripoSR_single:
     endpoint: "fal-ai/triposr"  # Queue endpoint id; HTTP base is https://fal.run/fal-ai/triposr
     unit_price_usd: 0.07
     price_source: "fal.ai price sheet — 2025-08-18"
