@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, threading, time, sys
+import json, threading, time, sys, logging
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -10,11 +10,7 @@ from archi3d.adapters.base import (
     ModelAdapter, Token, ExecResult,
     AdapterTransientError, AdapterPermanentError
 )
-
-def _write_line(fp: Path, msg: str) -> None:
-    fp.parent.mkdir(parents=True, exist_ok=True)
-    with fp.open("a", encoding="utf-8") as f:
-        f.write(msg.rstrip() + "\n")
+from archi3d.utils.text import slugify
 
 class RodinMultiAdapter(ModelAdapter):
     """
@@ -31,7 +27,13 @@ class RodinMultiAdapter(ModelAdapter):
     def execute(self, token: Token, deadline_s: int = 480) -> ExecResult:
         cfg = self.cfg
         endpoint = str(cfg["endpoint"])
-        log_file = self.logs_dir / f"{token.product_id}_{token.algo}_{token.job_id}.log"
+        log_file = self.logs_dir / f"{slugify(token.product_id)}_{slugify(token.algo)}_{token.job_id[:8]}.log"
+        
+        # --- SETUP ADAPTER-SPECIFIC FILE HANDLER ---
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+        self.logger.addHandler(file_handler)
+        # ---------------------------------------------
 
         # 1) Resolve absolute paths and upload to fal CDN
         abs_paths = [self.workspace / rel for rel in token.image_files]
@@ -39,7 +41,7 @@ class RodinMultiAdapter(ModelAdapter):
             image_urls = self._upload_images(abs_paths)
         except BaseException as e:
             msg = f"[ERROR] Upload failed: {e!r}"
-            _write_line(log_file, msg)
+            self.logger.error(msg)
             sys.stderr.write(msg + "\n")
             sys.stderr.flush()
             if "FAL_KEY" in str(e) or "MissingCredentialsError" in e.__class__.__name__:
@@ -61,7 +63,7 @@ class RodinMultiAdapter(ModelAdapter):
                 # persist full log
                 for log in update.logs:
                     if "message" in log:
-                        _write_line(log_file, log["message"])
+                        self.logger.info(log["message"])
                 # show last line on console
                 last = update.logs[-1]
                 if "message" in last:
@@ -90,20 +92,29 @@ class RodinMultiAdapter(ModelAdapter):
         sys.stdout.flush()
 
         if t.is_alive():
-            _write_line(log_file, f"[ERROR] Deadline exceeded ({deadline_s}s); cancelling locally.")
+            msg = f"[ERROR] Deadline exceeded ({deadline_s}s); cancelling locally."
+            self.logger.error(msg)
             raise AdapterTransientError(f"Timeout after {deadline_s}s")
         if err_container["e"] is not None:
+            self.logger.error(f"Provider error: {err_container['e']!s}")
             raise AdapterTransientError(str(err_container["e"]))
 
         # 4) Expect `model_mesh.url` (per API)
         result = result_container
         mesh = result.get("model_mesh") if isinstance(result, dict) else None
         if isinstance(mesh, dict) and "url" in mesh:
-            return ExecResult(
+            exec_result = ExecResult(
                 glb_path=str(mesh["url"]),
                 timings=result.get("timings") or {},
                 request_id=result.get("request_id") or result.get("task_id"),
             )
+        else:
+            self.logger.error(f"[ERROR] Unexpected response: {json.dumps(result)[:2000]}")
+            raise AdapterPermanentError("Unexpected output format (missing model_mesh.url)")
 
-        _write_line(log_file, f"[ERROR] Unexpected response: {json.dumps(result)[:2000]}")
-        raise AdapterPermanentError("Unexpected output format (missing model_mesh.url)")
+        # --- IMPORTANT: CLEAN UP HANDLER ---
+        self.logger.removeHandler(file_handler)
+        file_handler.close()
+        # ------------------------------------
+        
+        return exec_result

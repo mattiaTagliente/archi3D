@@ -5,6 +5,7 @@ import json
 import threading
 import time
 import sys
+import logging
 from pathlib import Path
 from typing import Any, Dict
 
@@ -15,11 +16,7 @@ from archi3d.adapters.base import (
     ModelAdapter, Token, ExecResult,
     AdapterTransientError, AdapterPermanentError,
 )
-
-def _write_line(fp: Path, msg: str) -> None:
-    fp.parent.mkdir(parents=True, exist_ok=True)
-    with fp.open("a", encoding="utf-8") as f:
-        f.write(msg.rstrip() + "\n")
+from archi3d.utils.text import slugify
 
 class Tripo3DSingleV2p5Adapter(ModelAdapter):
     """
@@ -50,7 +47,13 @@ class Tripo3DSingleV2p5Adapter(ModelAdapter):
     def execute(self, token: Token, deadline_s: int = 600) -> ExecResult:
         cfg = self.cfg
         endpoint = str(cfg["endpoint"])  # expected: "tripo3d/tripo/v2.5/image-to-3d"
-        log_file = self.logs_dir / f"{token.product_id}_{token.algo}_{token.job_id}.log"
+        log_file = self.logs_dir / f"{slugify(token.product_id)}_{slugify(token.algo)}_{token.job_id[:8]}.log"
+        
+        # --- SETUP ADAPTER-SPECIFIC FILE HANDLER ---
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+        self.logger.addHandler(file_handler)
+        # ---------------------------------------------
 
         # 1) One image is expected (batch policy guarantees it)
         if not token.image_files:
@@ -62,7 +65,7 @@ class Tripo3DSingleV2p5Adapter(ModelAdapter):
             image_url = self._upload_image(abs_path)
         except BaseException as e:
             msg = f"[ERROR] Upload failed: {e!r}"
-            _write_line(log_file, msg)
+            self.logger.error(msg)
             sys.stderr.write(msg + "\n")
             sys.stderr.flush()
             if "FAL_KEY" in str(e) or "MissingCredentialsError" in e.__class__.__name__:
@@ -82,7 +85,7 @@ class Tripo3DSingleV2p5Adapter(ModelAdapter):
             if isinstance(update, fal_client.InProgress) and update.logs:
                 for log in update.logs:
                     if "message" in log:
-                        _write_line(log_file, log["message"])
+                        self.logger.info(log["message"])
                 last_msg = update.logs[-1].get("message", "").strip()
                 if last_msg:
                     sys.stdout.write(f"\r\033[K> {last_msg}")
@@ -111,10 +114,12 @@ class Tripo3DSingleV2p5Adapter(ModelAdapter):
         sys.stdout.flush()
 
         if t.is_alive():
-            _write_line(log_file, f"[ERROR] Deadline exceeded ({deadline_s}s); cancelling locally.")
+            msg = f"[ERROR] Deadline exceeded ({deadline_s}s); cancelling locally."
+            self.logger.error(msg)
             raise AdapterTransientError(f"Timeout after {deadline_s}s")
 
         if err_container["e"] is not None:
+            self.logger.error(f"Provider error: {err_container['e']!s}")
             sys.stderr.write(f"[ERROR] Provider error: {err_container['e']!r}\n")
             sys.stderr.flush()
             raise AdapterTransientError(str(err_container["e"]))
@@ -126,11 +131,18 @@ class Tripo3DSingleV2p5Adapter(ModelAdapter):
 
         url = _pick_url(result.get("pbr_model")) or _pick_url(result.get("model_mesh")) or _pick_url(result.get("base_model"))
         if url:
-            return ExecResult(
+            exec_result = ExecResult(
                 glb_path=str(url),
                 timings=result.get("timings") or {},
                 request_id=result.get("request_id") or result.get("task_id"),
             )
+        else:
+            self.logger.error(f"[ERROR] Unexpected response: {json.dumps(result)[:2000]}")
+            raise AdapterPermanentError("Unexpected output format (missing pbr_model/model_mesh/base_model URL)")
 
-        _write_line(log_file, f"[ERROR] Unexpected response: {json.dumps(result)[:2000]}")
-        raise AdapterPermanentError("Unexpected output format (missing pbr_model/model_mesh/base_model URL)")
+        # --- IMPORTANT: CLEAN UP HANDLER ---
+        self.logger.removeHandler(file_handler)
+        file_handler.close()
+        # ------------------------------------
+        
+        return exec_result

@@ -1,15 +1,12 @@
 from __future__ import annotations
-import time, json, threading, sys
+import time, json, threading, sys, logging
 from pathlib import Path
 from typing import Any, Dict, List
 import requests
 import fal_client
 from archi3d.adapters.base import ModelAdapter, Token, ExecResult, AdapterTransientError, AdapterPermanentError
+from archi3d.utils.text import slugify
 
-def _write_line(fp: Path, msg: str) -> None:
-    fp.parent.mkdir(parents=True, exist_ok=True)
-    with fp.open("a", encoding="utf-8") as f:
-        f.write(msg.rstrip() + "\n")
 
 class TrellisMultiAdapter(ModelAdapter):
     """Adapter for fal-ai/trellis/multi (multi-image)."""
@@ -31,7 +28,15 @@ class TrellisMultiAdapter(ModelAdapter):
 
     def execute(self, token: Token, deadline_s: int = 480) -> ExecResult:
         algo_cfg = self.cfg  # already resolved to the specific key
-        log_file = self.logs_dir / f"{token.product_id}_{token.algo}_{token.job_id}.log"
+        log_file = self.logs_dir / f"{slugify(token.product_id)}_{slugify(token.algo)}_{token.job_id[:8]}.log"
+        
+        # --- SETUP ADAPTER-SPECIFIC FILE HANDLER ---
+        # This ensures logs for this specific job go to a file
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+        # Add handler to the logger from the base class
+        self.logger.addHandler(file_handler)
+        # ---------------------------------------------
 
         # 1) Resolve absolute image paths (workspace is the root).
         abs_paths = [self.workspace / rel for rel in token.image_files]
@@ -41,7 +46,7 @@ class TrellisMultiAdapter(ModelAdapter):
             image_urls = self._upload_images(abs_paths)
         except BaseException as e:
             msg = f"[ERROR] Upload failed: {e!r}"
-            _write_line(log_file, msg)
+            self.logger.error(msg)
             sys.stderr.write(msg + "\n")
             sys.stderr.flush()
             if "FAL_KEY" in str(e) or "MissingCredentialsError" in e.__class__.__name__:
@@ -62,7 +67,7 @@ class TrellisMultiAdapter(ModelAdapter):
                 # Write all logs to the file for complete history
                 for log in update.logs:
                     if "message" in log:
-                        _write_line(log_file, log["message"])
+                        self.logger.info(log["message"])
                 
                 # Get the last message to display on the console
                 last_log = update.logs[-1]
@@ -89,18 +94,28 @@ class TrellisMultiAdapter(ModelAdapter):
         sys.stdout.flush()
 
         if t.is_alive():
-            _write_line(log_file, f"[ERROR] Deadline exceeded ({deadline_s}s); cancelling locally.")
+            msg = f"[ERROR] Deadline exceeded ({deadline_s}s); cancelling locally."
+            self.logger.error(msg)
             raise AdapterTransientError(f"Timeout after {deadline_s}s")
 
         if err_container["e"] is not None:
+            self.logger.error(f"Provider error: {err_container['e']!s}")
             raise AdapterTransientError(str(err_container["e"]))
 
         result = result_container
         mesh = result.get("model_mesh") if isinstance(result, dict) else None
         if not isinstance(mesh, dict) or "url" not in mesh:
-            _write_line(log_file, f"[ERROR] Unexpected response: {json.dumps(result)[:2000]}")
+            # Use the logger
+            self.logger.error(f"[ERROR] Unexpected response: {json.dumps(result)[:2000]}")
             raise AdapterPermanentError("Unexpected output format (missing model_mesh.url)")
-
+        
         # 5) Return the remote URL as a string
         glb_url = mesh["url"]
-        return ExecResult(glb_path=glb_url, timings=result.get("timings") or {}, request_id=result.get("request_id"))
+        exec_result = ExecResult(glb_path=glb_url, timings=result.get("timings") or {}, request_id=result.get("request_id"))
+
+        # --- IMPORTANT: CLEAN UP HANDLER ---
+        self.logger.removeHandler(file_handler)
+        file_handler.close()
+        # ------------------------------------
+        
+        return exec_result
