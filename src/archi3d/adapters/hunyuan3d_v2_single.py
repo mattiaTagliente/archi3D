@@ -16,6 +16,7 @@ from archi3d.adapters.base import (
     AdapterTransientError, AdapterPermanentError,
 )
 from archi3d.utils.text import slugify
+from archi3d.utils.uploads import upload_file_safely
 
 
 class Hunyuan3DSingleV2Adapter(ModelAdapter):
@@ -23,18 +24,18 @@ class Hunyuan3DSingleV2Adapter(ModelAdapter):
     Single-image adapter for fal-ai/hunyuan3d/v2.
 
     Input:
-      - input_image_url (string) — required single image URL.  :contentReference[oaicite:2]{index=2}
+      - input_image_url (string) — required single image URL.  
 
     Defaults applied here:
-      - textured_mesh=True (other params at provider defaults).  :contentReference[oaicite:3]{index=3}
+      - textured_mesh=True (other params at provider defaults).  
 
     Output:
-      - model_mesh.url — generated 3D object file (GLB).  :contentReference[oaicite:4]{index=4}
+      - model_mesh.url — generated 3D object file (GLB).  
     """
 
     def _upload_image(self, abs_image_path: Path) -> str:
         # Uploads to fal temporary storage and returns a signed URL
-        return fal_client.upload_file(abs_image_path)
+        return upload_file_safely(abs_image_path)
 
     def _download_file(self, url: str, out_path: Path) -> None:
         # Not used currently; helper retained for parity and potential future caching
@@ -81,7 +82,7 @@ class Hunyuan3DSingleV2Adapter(ModelAdapter):
             raise AdapterTransientError(f"Upload failed: {e}") from e
 
         # 3) Build arguments:
-        #    Hunyuan v2 uses 'input_image_url'; we enable textured_mesh in defaults.  :contentReference[oaicite:5]{index=5}
+        #    Hunyuan v2 uses 'input_image_url'; we enable textured_mesh in defaults.  
         defaults: Dict[str, Any] = dict(cfg.get("defaults") or {})
         arguments: Dict[str, Any] = {**defaults, "input_image_url": image_url}
 
@@ -133,7 +134,7 @@ class Hunyuan3DSingleV2Adapter(ModelAdapter):
             sys.stderr.flush()
             raise AdapterTransientError(str(err_container["e"]))
 
-        # 5) Parse output (expect model_mesh.url)  :contentReference[oaicite:6]{index=6}
+        # 5) Parse output (expect model_mesh.url)  
         result = result_container
         mesh = result.get("model_mesh")
         url = mesh.get("url") if isinstance(mesh, dict) else None

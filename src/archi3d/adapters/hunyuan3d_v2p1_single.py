@@ -16,6 +16,7 @@ from archi3d.adapters.base import (
     AdapterTransientError, AdapterPermanentError,
 )
 from archi3d.utils.text import slugify
+from archi3d.utils.uploads import upload_file_safely
 
 
 class Hunyuan3DSingleV2p1Adapter(ModelAdapter):
@@ -33,7 +34,7 @@ class Hunyuan3DSingleV2p1Adapter(ModelAdapter):
     # ---- helpers ------------------------------------------------------------
     def _upload_image(self, abs_image_path: Path) -> str:
         # Uploads to fal temporary storage and returns a signed URL
-        return fal_client.upload_file(abs_image_path)
+        return upload_file_safely(abs_image_path)
 
     def _download_file(self, url: str, out_path: Path) -> None:
         # Not used currently; kept for potential local caching

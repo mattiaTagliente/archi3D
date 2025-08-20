@@ -16,6 +16,7 @@ from archi3d.adapters.base import (
     AdapterTransientError, AdapterPermanentError,
 )
 from archi3d.utils.text import slugify
+from archi3d.utils.uploads import upload_file_safely
 
 class TripoSRSingleAdapter(ModelAdapter):
     """
@@ -29,7 +30,7 @@ class TripoSRSingleAdapter(ModelAdapter):
     """
 
     def _upload_image(self, abs_image_path: Path) -> str:
-        return fal_client.upload_file(abs_image_path)
+        return upload_file_safely(abs_image_path)
 
     def _download_file(self, url: str, out_path: Path) -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)

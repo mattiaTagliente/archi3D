@@ -11,6 +11,7 @@ from archi3d.adapters.base import (
     AdapterTransientError, AdapterPermanentError
 )
 from archi3d.utils.text import slugify
+from archi3d.utils.uploads import upload_file_safely
 
 class RodinMultiAdapter(ModelAdapter):
     """
@@ -21,7 +22,7 @@ class RodinMultiAdapter(ModelAdapter):
     def _upload_images(self, abs_image_paths: List[Path]) -> List[str]:
         urls: List[str] = []
         for p in abs_image_paths:
-            urls.append(fal_client.upload_file(p))  # Path-safe on Windows
+            urls.append(upload_file_safely(p))  # Path-safe on Windows
         return urls
 
     def execute(self, token: Token, deadline_s: int = 480) -> ExecResult:

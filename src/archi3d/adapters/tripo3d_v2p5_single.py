@@ -17,22 +17,23 @@ from archi3d.adapters.base import (
     AdapterTransientError, AdapterPermanentError,
 )
 from archi3d.utils.text import slugify
+from archi3d.utils.uploads import upload_file_safely
 
 class Tripo3DSingleV2p5Adapter(ModelAdapter):
     """
     Single-image adapter for tripo3d/tripo/v2.5/image-to-3d.
 
     Input:
-      - image_url (string)  — single image URL.  :contentReference[oaicite:2]{index=2}
+      - image_url (string)  — single image URL.  
       - pbr=True, texture="HD" (others default).  Note: provider states that when pbr=True,
-        texture is effectively enabled; we still pass "HD" as requested.  :contentReference[oaicite:3]{index=3}
+        texture is effectively enabled; we still pass "HD" as requested.  
 
-    Output preference: pbr_model.url > model_mesh.url > base_model.url.  :contentReference[oaicite:4]{index=4}
+    Output preference: pbr_model.url > model_mesh.url > base_model.url.  
     """
 
     def _upload_image(self, abs_image_path: Path) -> str:
         # Returns a signed URL on fal storage
-        return fal_client.upload_file(abs_image_path)
+        return upload_file_safely(abs_image_path)
 
     def _download_file(self, url: str, out_path: Path) -> None:
         # Not used currently; helper retained for parity
@@ -73,7 +74,7 @@ class Tripo3DSingleV2p5Adapter(ModelAdapter):
             raise AdapterTransientError(f"Upload failed: {e}") from e
 
         # 3) Build arguments from config defaults + uploaded URL
-        #    Input key is 'image_url'.  :contentReference[oaicite:5]{index=5}
+        #    Input key is 'image_url'.  
         defaults: Dict[str, Any] = dict(cfg.get("defaults") or {})
         arguments: Dict[str, Any] = {**defaults, "image_url": image_url}
 
@@ -124,7 +125,7 @@ class Tripo3DSingleV2p5Adapter(ModelAdapter):
             sys.stderr.flush()
             raise AdapterTransientError(str(err_container["e"]))
 
-        # 5) Parse output (prefer pbr_model.url)  :contentReference[oaicite:6]{index=6}
+        # 5) Parse output (prefer pbr_model.url)  
         result = result_container
         def _pick_url(d: Dict[str, Any] | None) -> str | None:
             return d.get("url") if isinstance(d, dict) else None

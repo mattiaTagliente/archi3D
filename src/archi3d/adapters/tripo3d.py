@@ -11,6 +11,7 @@ from archi3d.adapters.base import (
     AdapterTransientError, AdapterPermanentError
 )
 from archi3d.utils.text import slugify
+from archi3d.utils.uploads import upload_file_safely
 
 # Extract trailing _A.jpg / _B.png etc. (case-insensitive)
 _SUFFIX_RE = re.compile(r"_([A-Z])(?:\.[^.]+)$", re.IGNORECASE)
@@ -37,8 +38,8 @@ class Tripo3DMultiV2p5Adapter(ModelAdapter):
     def _upload_images(self, abs_image_paths: List[Path]) -> List[str]:
         urls: List[str] = []
         for p in abs_image_paths:
-            # Use Path object (Windows-safe) -> fal client handles it.
-            urls.append(fal_client.upload_file(p))
+            # Use the new safe uploader
+            urls.append(upload_file_safely(p))
         return urls
 
     def _assign_views(self, image_urls: List[str], rel_files: List[str]) -> Dict[str, str]:

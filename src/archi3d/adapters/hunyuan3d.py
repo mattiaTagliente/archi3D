@@ -11,6 +11,8 @@ from archi3d.adapters.base import (
     AdapterTransientError, AdapterPermanentError
 )
 from archi3d.utils.text import slugify
+# Import the new safe uploader
+from archi3d.utils.uploads import upload_file_safely
 
 # A..Z ordering helper (mirrors the Tripo3D adapter logic you approved)
 _SUFFIX_RE = re.compile(r"_([A-Z])(?:\.[^.]+)$", re.IGNORECASE)
@@ -32,7 +34,11 @@ class Hunyuan3DMultiviewV2Adapter(ModelAdapter):
     """
 
     def _upload_images(self, abs_image_paths: List[Path]) -> List[str]:
-        return [fal_client.upload_file(p) for p in abs_image_paths]  # Path-safe on Windows
+        """
+        Uploads multiple images using the safe-rename strategy.
+        """
+        # Simply call the new safe utility for each path.
+        return [upload_file_safely(p) for p in abs_image_paths]
 
     def _assign_views(self, image_urls: List[str], rel_files: List[str]) -> Dict[str, str]:
         """

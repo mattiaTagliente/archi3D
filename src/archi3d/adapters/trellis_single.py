@@ -17,15 +17,16 @@ from archi3d.adapters.base import (
     AdapterTransientError, AdapterPermanentError,
 )
 from archi3d.utils.text import slugify
+from archi3d.utils.uploads import upload_file_safely
 
 class TrellisSingleAdapter(ModelAdapter):
     """
     Single-image adapter for fal-ai/trellis.
-    Input key: image_url. Output key: model_mesh.url. Texture size pinned at 2048.  :contentReference[oaicite:4]{index=4}:contentReference[oaicite:5]{index=5}
+    Input key: image_url. Output key: model_mesh.url. Texture size pinned at 2048.  
     """
 
     def _upload_image(self, abs_image_path: Path) -> str:
-        return fal_client.upload_file(abs_image_path)
+        return upload_file_safely(abs_image_path)
 
     def _download_glb(self, url: str, out_path: Path) -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +68,7 @@ class TrellisSingleAdapter(ModelAdapter):
             raise AdapterTransientError(f"Upload failed: {e}") from e
 
         # 3) Build call arguments.
-        #    NOTE: Trellis single-image uses `image_url`; we pin `texture_size=2048`.  :contentReference[oaicite:6]{index=6}
+        #    NOTE: Trellis single-image uses `image_url`; we pin `texture_size=2048`.  
         defaults: Dict[str, Any] = dict(cfg.get("defaults") or {})
         arguments: Dict[str, Any] = {**defaults, "image_url": image_url}
 
@@ -119,7 +120,7 @@ class TrellisSingleAdapter(ModelAdapter):
             sys.stderr.flush()
             raise AdapterTransientError(str(err_container["e"]))
 
-        # 5) Parse output (expect model_mesh.url).  :contentReference[oaicite:7]{index=7}
+        # 5) Parse output (expect model_mesh.url).  
         result = result_container
         mesh = result.get("model_mesh") if isinstance(result, dict) else None
         if isinstance(mesh, dict) and "url" in mesh:
