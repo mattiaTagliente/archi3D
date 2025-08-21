@@ -13,6 +13,15 @@ class Thresholds(BaseModel):
     fscore_min: float = Field(..., gt=0, lt=1, description="Min acceptable F-score in [0,1]")
 
 
+class BatchConfig(BaseModel):
+    """Configuration for batch creation."""
+    model_config = ConfigDict(extra="forbid")
+
+    # CORRECTED: Simplified the default value assignment to be more explicit for Pylance.
+    # By removing Field(), we avoid the function call syntax that was causing the issue.
+    single_image_policy: str = "exact_one"
+
+
 class GlobalConfig(BaseModel):
     """Global (repo) configuration."""
     model_config = ConfigDict(extra="forbid")
@@ -25,6 +34,8 @@ class GlobalConfig(BaseModel):
         ...,
         description="Quality thresholds used in reporting and gating."
     )
+    # This now correctly references BatchConfig, which has a clear default.
+    batch: BatchConfig = Field(default_factory=BatchConfig)
 
 
 class UserConfig(BaseModel):
