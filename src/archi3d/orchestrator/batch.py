@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,11 +29,9 @@ from archi3d.utils.text import slugify
 def _candidate_global_yaml_paths() -> list[Path]:
     """Ordered candidates for global.yaml across dev and frozen runtimes."""
     cands: list[Path] = []
-    # 1) Explicit override
     env_path = os.getenv("ARCHI3D_GLOBAL_YAML")
     if env_path:
         cands.append(Path(env_path))
-    # 2) CWD upward
     cur = Path.cwd().resolve()
     for _ in range(7):
         cands.append(cur / "global.yaml")
@@ -43,7 +40,6 @@ def _candidate_global_yaml_paths() -> list[Path]:
         if cur.parent == cur:
             break
         cur = cur.parent
-    # 3) Source tree
     here = Path(__file__).resolve()
     cur = here
     for _ in range(7):
@@ -53,9 +49,7 @@ def _candidate_global_yaml_paths() -> list[Path]:
         if cur.parent == cur:
             break
         cur = cur.parent
-    # 4) User config
     cands.append(user_config_path("archi3d") / "global.yaml")
-    # De-dup while preserving order
     seen = set()
     return [p for p in cands if p not in seen and not seen.add(p)]
 
@@ -127,7 +121,6 @@ def _select_for_single(image_files: List[str], policy: str) -> Tuple[List[str], 
             return [], "policy_requires_exactly_1_image"
         return [image_files[0]], None
 
-    # Default to 'allow_any' behavior
     a_matches = [p for p in image_files if re.search(r"_A\.(jpg|jpeg|png)$", p, re.IGNORECASE)]
     if a_matches:
         return [a_matches[0]], None
@@ -135,8 +128,7 @@ def _select_for_single(image_files: List[str], policy: str) -> Tuple[List[str], 
 
 
 def _select_first_k(image_files: List[str], k: int, min_required: Optional[int] = None) -> Tuple[List[str], Optional[str]]:
-    if min_required is None:
-        min_required = k
+    min_required = min_required or k
     if len(image_files) < min_required:
         return [], f"insufficient_images(min={min_required})"
     return image_files[:k], None
@@ -156,13 +148,11 @@ def _select_min_max(image_files: List[str], n_min: int, n_max: int) -> Tuple[Lis
 
 # Map algorithms to policies
 _POLICIES: Dict[str, Tuple[str, Dict]] = {
-    # multi-image models
     "trellis_multi_stochastic": ("min_all", {"n_min": 2}),
     "trellis_multi_multidiffusion": ("min_all", {"n_min": 2}),
     "rodin_multi": ("min_all", {"n_min": 2}),
     "tripo3d_v2p5_multi": ("min_max", {"n_min": 2, "n_max": 4}),
     "hunyuan3d_v2_multi": ("first_k", {"k": 3, "min_required": 3}),
-    # single-image models
     "trellis_single": ("single", {}),
     "tripoSR_single": ("single", {}),
     "tripo3d_v2p5_single": ("single", {}),
@@ -205,6 +195,7 @@ def _load_items_csv(paths: PathResolver) -> pd.DataFrame:
 
 
 def _existing_completed_for_run(paths: PathResolver, run_id: str) -> set[str]:
+    """Scans the results table for jobs completed specifically FOR THE GIVEN RUN_ID."""
     p = paths.results_parquet
     if not p.exists():
         return set()
@@ -217,29 +208,22 @@ def _existing_completed_for_run(paths: PathResolver, run_id: str) -> set[str]:
 
 def _already_queued(queue_dir: Path, job_id_prefix: str) -> bool:
     """Check for any token file that contains the unique job hash identifier."""
-    patterns = [f"*_h{job_id_prefix}.*.json", f"*h{job_id_prefix}.*.json"]
-    for pat in patterns:
-        if list(queue_dir.glob(pat)):
-            return True
-    return False
+    return len(list(queue_dir.glob(f"*_h{job_id_prefix}.*.json"))) > 0
 
 
 def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str) -> str:
-    """Computes a deterministic job ID from its core components, including code version."""
-    material = f"{algo}|{product_id}|{variant}|{image_csv}|{__version__}"
+    """Computes a deterministic, VERSION-AGNOSTIC job ID for idempotency."""
+    material = f"{algo}|{product_id}|{variant}|{image_csv}"
     return _sha1(material)
 
 
 def _readable_token_name(product_id: str, algo: str, n_images: int, img_suffixes: str, run_id: str, job_id: str) -> str:
+    """Creates a readable token name, preserving suffix casing."""
     job8 = job_id[:8]
-    s_pid = slugify(product_id)
-    s_algo = slugify(algo)
-    s_run = slugify(run_id)
-    s_suf = slugify(img_suffixes)
-    core = f"{s_pid}_{s_algo}_N{n_images}"
-    if s_suf:
-        core += f"_{s_suf}"
-    core += f"_{s_run}_h{job8}"
+    core = f"{slugify(product_id)}_{slugify(algo)}_N{n_images}"
+    if img_suffixes:
+        core += f"_{img_suffixes}"
+    core += f"_{slugify(run_id)}_h{job8}"
     return f"{core[:120]}.todo.json"
 
 
@@ -254,25 +238,14 @@ def create_batch(
     only: Optional[str] = None,
 ) -> Tuple[Path, Dict]:
     """
-    Create a run manifest and queue tokens under runs/<run_id>/queue/.
-    Enforces per-algorithm image count constraints and single-image policies.
-    Skips jobs already completed for the same (run_id, job_id).
-    Returns path to manifest_inputs.csv and a summary dictionary.
+    Create a run manifest and queue tokens. Skips jobs already completed
+    for the same run_id to ensure idempotency within a run.
     """
     paths.validate_expected_tree()
-
-    # Read single-image policy from global config (defaults to "exact_one")
     single_image_policy = _read_single_image_policy()
 
-    # Freeze run config
     run_cfg_path = paths.run_config_path(run_id)
-    run_cfg = {
-        "run_id": run_id,
-        "created_at": _now_iso(),
-        "code_version": __version__,
-        "algorithms": algorithms,
-        "batch_config": {"single_image_policy": single_image_policy},
-    }
+    run_cfg = {"run_id": run_id, "created_at": _now_iso(), "code_version": __version__, "algorithms": algorithms, "batch_config": {"single_image_policy": single_image_policy}}
     write_yaml(run_cfg_path, run_cfg)
 
     items = _load_items_csv(paths)
@@ -280,7 +253,7 @@ def create_batch(
         items = items[items["product_id"].apply(lambda s: fnmatch.fnmatchcase(s, only))].reset_index(drop=True)
 
     queue_dir = paths.queue_dir(run_id)
-    _ = paths.outputs_dir(run_id)  # ensure exists
+    _ = paths.outputs_dir(run_id)
 
     completed_job_ids = _existing_completed_for_run(paths, run_id)
     manifest_rows: List[ManifestRow] = []
@@ -296,43 +269,26 @@ def create_batch(
             img_suffixes = _img_suffixes_from_list(selected)
             image_csv = ",".join(selected)
             job_id = _compose_job_id(algo, product_id, variant, image_csv)
-            job_id8 = job_id[:8]
 
             if reason:
-                manifest_rows.append(
-                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, reason)
-                )
+                manifest_rows.append(ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, reason))
                 continue
 
             if job_id in completed_job_ids:
-                manifest_rows.append(
-                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_completed")
-                )
+                manifest_rows.append(ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_completed"))
                 continue
 
-            if _already_queued(queue_dir, job_id8):
-                manifest_rows.append(
-                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_queued")
-                )
+            if _already_queued(queue_dir, job_id[:8]):
+                manifest_rows.append(ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_queued"))
                 continue
 
             token = {
-                "job_id": job_id,
-                "run_id": run_id,
-                "product_id": product_id,
-                "variant": variant,
-                "algo": algo,
-                "image_files": selected,
-                "gt_fbx_relpath": gt_rel,
-                "queued_at": _now_iso(),
-                "code_version": __version__,
+                "job_id": job_id, "run_id": run_id, "product_id": product_id, "variant": variant, "algo": algo,
+                "image_files": selected, "gt_fbx_relpath": gt_rel, "queued_at": _now_iso(), "code_version": __version__,
             }
             token_name = _readable_token_name(product_id, algo, len(selected), img_suffixes, run_id, job_id)
             write_json(queue_dir / token_name, token)
-
-            manifest_rows.append(
-                ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "")
-            )
+            manifest_rows.append(ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, ""))
 
     manifest_path = paths.manifest_inputs_csv(run_id)
     mdf = pd.DataFrame(
@@ -341,16 +297,13 @@ def create_batch(
     ).sort_values(["product_id", "algo"], kind="stable")
 
     summary = {
-        "run_id": run_id,
-        "created_at": _now_iso(),
-        "code_version": __version__,
-        "user_filter": only or "all",
+        "run_id": run_id, "created_at": _now_iso(), "code_version": __version__, "user_filter": only or "all",
         "algorithms": algorithms,
         "policy": {"single_image": single_image_policy},
         "counts": {
-            "manifest_rows": int(mdf.shape[0]),
-            "enqueued": int((mdf["reason"] == "").sum()),
-            "skipped": int((mdf["reason"] != "").sum()),
+            "manifest_rows": len(mdf),
+            "enqueued": (mdf["reason"] == "").sum(),
+            "skipped": (mdf["reason"] != "").sum(),
         },
         "skip_reasons": mdf[mdf["reason"] != ""]["reason"].value_counts().to_dict(),
     }

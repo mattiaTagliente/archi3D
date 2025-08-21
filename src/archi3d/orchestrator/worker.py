@@ -26,7 +26,6 @@ from archi3d.adapters.base import (
 from archi3d.adapters.registry import REGISTRY
 from archi3d.config.adapters_cfg import load_adapters_cfg
 from archi3d.config.paths import PathResolver
-# Import the canonical function from batch.py
 from archi3d.orchestrator.batch import _compose_job_id
 from archi3d.utils.io import read_json
 from archi3d.utils.text import slugify
@@ -70,45 +69,22 @@ def _now_iso() -> str:
 
 
 def _derive_variant_slug(product_id: str, first_image_rel: str) -> str:
-    """
-    first_image_rel looks like 'dataset/<folder_name>/images/<file>'
-    If <folder_name> is '12345 - Curved backrest' we extract 'Curved backrest' as variant.
-    If it's just '12345', variant is empty -> slug ''.
-    """
     try:
         p = Path(first_image_rel)
-        # Expected structure has at least 2 parts: 'dataset', '<folder_name>'
         if len(p.parts) < 2:
-            logging.warning(
-                f"Could not derive variant slug: path '{first_image_rel}' has fewer than 2 parts."
-            )
             return ""
-
-        folder_name = p.parts[1]  # dataset/<folder_name>/images/...
-
+        folder_name = p.parts[1]
     except IndexError:
-        # This will catch cases where the path is malformed, e.g., not containing enough parts.
-        logging.warning(
-            f"Could not derive variant slug from path '{first_image_rel}'. "
-            "Path structure is not as expected ('dataset/<folder>/...').",
-            exc_info=True,  # exc_info=True adds the traceback to the log
-        )
         return ""
 
-    # folder_name may be "12345" or "12345 - Variant Name"
     if " - " in folder_name:
         pid, var = folder_name.split(" - ", 1)
         if pid.strip() == product_id.strip():
-            # CORRECTED: Removed the invalid max_len argument
             return slugify(var)
     return ""
 
 
 def _img_suffixes_from_list(image_files: List[str], max_len: int = 20) -> str:
-    """
-    Extract letters A..Z from filenames; fallback to empty if not present.
-    Return joined with '-' and truncated for filename safety.
-    """
     letters: List[str] = []
     for s in image_files:
         m = _SUFFIX_RE.search(Path(s).name)
@@ -119,38 +95,36 @@ def _img_suffixes_from_list(image_files: List[str], max_len: int = 20) -> str:
 
 
 def _select_tokens(queue_dir: Path, run_id: str, algo: str) -> List[Path]:
-    """
-    Support BOTH legacy and new readable patterns:
-
-    Legacy:  *__{algo}__{jobid8}.todo.json
-    New:     *_{algo}_N*_*_{run_id}_h*.todo.json
-    """
-    legacy = sorted(queue_dir.glob(f"*__{algo}__*.todo.json"))
-    readable = sorted(queue_dir.glob(f"*_{algo}_N*_*_{run_id}_h*.todo.json"))
-    # Prefer readable first, then legacy
-    return readable + legacy
+    readable = sorted(queue_dir.glob(f"*_{slugify(algo)}_N*_*_{slugify(run_id)}_h*.todo.json"))
+    return readable
 
 
 def _rename_atomic(p: Path, new_suffix: str) -> Path:
     """
-    Rename <name>.<state>.json to <name>.<new_suffix>.json atomically.
+    FIXED: Atomically renames a token file by correctly replacing its multi-part state suffix.
+    e.g., '...<name>.todo.json' -> '...<name>.inprogress.json'
     """
-    target = p.with_suffix(f".{new_suffix}.json")
+    # Find the core name by stripping all known state suffixes
+    name = p.name
+    for suffix in [".todo.json", ".inprogress.json", ".completed.json", ".failed.json"]:
+        if name.endswith(suffix):
+            core_name = name[:-len(suffix)]
+            break
+    else:
+        # Fallback for unexpected formats (like the old buggy ones)
+        # This finds the first dot and takes everything before it.
+        core_name = name.split('.', 1)[0]
+    
+    # Construct the new filename and rename
+    target = p.with_name(f"{core_name}.{new_suffix}.json")
     p.rename(target)
     return target
 
 
 def _write_result_staging(paths: PathResolver, row: dict) -> None:
-    """
-    Writes a single job's result to a unique parquet file in a staging directory.
-    This avoids locks and race conditions entirely.
-    """
     staging_dir = paths.results_staging_dir()
-    # Create a unique filename based on the job ID to prevent any conflicts.
     job_id = row.get("job_id", "unknown_job")
     output_path = staging_dir / f"{job_id}.parquet"
-
-    # Convert the single row to a DataFrame and save.
     df = pd.DataFrame([row])
     df.to_parquet(output_path, index=False)
 
@@ -213,11 +187,6 @@ def run_worker(
     dry_run: bool,
     paths: PathResolver,
 ) -> Dict[str, int]:
-    """
-    Process up to `limit` tokens for the given run+algo.
-    Implements an integrity check to ensure job tokens are not corrupt.
-    Returns a dictionary with counts of processed, completed, and failed jobs.
-    """
     paths.validate_expected_tree()
     queue_dir = paths.queue_dir(run_id)
     tokens = _select_tokens(queue_dir, run_id, algo)
@@ -228,11 +197,9 @@ def run_worker(
         return {"processed": min(limit, len(tokens)), "completed": 0, "failed": 0}
 
     worker_id = os.environ.get("ARCHI3D_WORKER_ID") or getpass.getuser()
-    processed = 0
-    completed_count = 0
-    failed_count = 0
-
-    repo_root = Path(__file__).resolve().parents[2]
+    processed, completed_count, failed_count = 0, 0, 0
+    
+    repo_root = Path(__file__).resolve().parents[3] # Adjusted for src structure
     ADAPTERS_CFG = load_adapters_cfg(repo_root).get("adapters", {})
     workspace = paths.workspace_root
 
@@ -240,226 +207,114 @@ def run_worker(
         if processed >= limit:
             break
 
-        # Claim atomically
         try:
             inprog = _rename_atomic(todo, f"inprogress.{worker_id}")
         except FileNotFoundError:
-            # Another worker grabbed it
             continue
 
         error_msg = ""
-        status = "completed"
+        status = "failed"
         output_rel = ""
-
-        # Initialize variables for the error block
         job_id, product_id, variant, image_files, img_suffixes = "", "", "", [], ""
 
         try:
-            # Use the new UTF-8 safe reader
             token_json = read_json(inprog)
-            job_id: str = token_json["job_id"]
-            product_id: str = token_json["product_id"]
-            variant: str = token_json.get("variant", "")
-            image_files: List[str] = list(token_json.get("image_files", []))
-            
-            # Recalculate img_suffixes from the image_files list
+            job_id = token_json["job_id"]
+            product_id = token_json["product_id"]
+            variant = token_json.get("variant", "")
+            image_files = list(token_json.get("image_files", []))
             img_suffixes = _img_suffixes_from_list(image_files)
 
-            # --- JOB ID INTEGRITY CHECK ---
-            image_csv = ",".join(image_files)
-            # Re-compute the job ID using the exact same function and data
             expected_job_id = _compose_job_id(
-                algo=token_json["algo"],
-                product_id=product_id,
-                variant=variant,
-                image_csv=image_csv,
+                algo=token_json["algo"], product_id=product_id,
+                variant=variant, image_csv=",".join(image_files)
             )
 
             if job_id != expected_job_id:
-                raise ValueError(
-                    f"Job ID mismatch. Token has '{job_id}', but content computes to '{expected_job_id}'. "
-                    "The token file may be corrupt or was manually edited."
-                )
-            # --- END OF CHECK ---
+                raise ValueError(f"Job ID mismatch. Token: '{job_id}', Computed: '{expected_job_id}'.")
 
-            job_id8 = job_id[:8]
-            n_images = len(image_files)
-
-            # Derive variant from dataset folder name of first image
-            variant_slug = (
-                _derive_variant_slug(product_id, image_files[0]) if image_files else ""
-            )
-
-            # Compose output names & paths
+            variant_slug = _derive_variant_slug(product_id, image_files[0]) if image_files else ""
             glb_name, _ = _compose_output_names(
-                run_id=run_id,
-                algo=algo,
-                product_id=product_id,
-                variant_slug=variant_slug,
-                n_images=n_images,
-                img_suffixes=img_suffixes,
-                job_id8=job_id8,
+                run_id, algo, product_id, variant_slug, len(image_files), img_suffixes, job_id[:8]
             )
-
-            out_dir = paths.outputs_dir(run_id, algo=algo)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_glb = out_dir / glb_name
-
-            # Logs directory
+            out_glb = paths.outputs_dir(run_id, algo=algo) / glb_name
             logs_dir = paths.run_dir(run_id) / "logs" / algo
             logs_dir.mkdir(parents=True, exist_ok=True)
 
-            # Adapter resolution
             AdapterCls = REGISTRY.get(algo)
             if AdapterCls is None:
-                status = "failed"
-                error_msg = f"unknown_adapter: No adapter registered for {algo}"
-                raise RuntimeError(error_msg)
+                raise RuntimeError(f"Unknown adapter: {algo}")
 
-            # Build token object
             tok = Token(
-                run_id=run_id,
-                algo=algo,
-                product_id=token_json["product_id"],
-                variant=token_json.get("variant", ""),
-                image_files=token_json["image_files"],
-                img_suffixes=img_suffixes, # Pass the calculated suffixes
-                job_id=token_json["job_id"],
+                run_id=run_id, algo=algo, product_id=product_id, variant=variant,
+                image_files=image_files, img_suffixes=img_suffixes, job_id=job_id
             )
-
-            # Merge adapter cfg for this algo key
+            
             algo_cfg = ADAPTERS_CFG.get(algo, {})
             adapter = AdapterCls(cfg=algo_cfg, workspace=workspace, logs_dir=logs_dir)
 
-            # Retry/backoff (10s,30s,60s); deadline 8 minutes per your policy
             delays = [10, 30, 60]
-            attempt = 0
             start_time = time.time()
-
-            while True:
+            for attempt in range(len(delays) + 1):
                 try:
                     exec_res = adapter.execute(tok, deadline_s=480)
-                    # exec_res.glb_path currently holds the remote URL or a local path
                     if isinstance(exec_res.glb_path, str) and exec_res.glb_path.startswith("http"):
-                        with requests.get(
-                            exec_res.glb_path, stream=True, timeout=120
-                        ) as r:
+                        with requests.get(exec_res.glb_path, stream=True, timeout=120) as r:
                             r.raise_for_status()
                             with out_glb.open("wb") as f:
                                 for chunk in r.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
+                                    f.write(chunk)
                     else:
-                        # already a file path (future adapters may return local paths)
                         Path(exec_res.glb_path).replace(out_glb)
                     status = "completed"
                     error_msg = ""
                     break
                 except AdapterTransientError as e:
                     if attempt >= len(delays):
-                        status = "failed"
                         error_msg = f"transient_exhausted: {e}"
                         break
                     time.sleep(delays[attempt])
-                    attempt += 1
-                    continue
                 except AdapterPermanentError as e:
-                    status = "failed"
                     error_msg = f"permanent: {e}"
                     break
-
-            finished_time = time.time()
-            duration = finished_time - start_time
-
-            # Append to registry
+            
+            duration = time.time() - start_time
             row = {
-                "run_id": run_id,
-                "job_id": tok.job_id,
-                "product_id": tok.product_id,
-                "variant": tok.variant,
-                "algo": algo,
-                "n_images": len(tok.image_files),
-                "img_suffixes": tok.img_suffixes,
-                "status": status,
-                "started_at": time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(start_time)
-                ),
-                "finished_at": time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(finished_time)
-                ),
+                "run_id": run_id, "job_id": job_id, "product_id": product_id, "variant": variant,
+                "algo": algo, "n_images": len(image_files), "img_suffixes": img_suffixes, "status": status,
+                "started_at": datetime.fromtimestamp(start_time, timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
                 "duration_s": duration,
-                "output_glb_relpath": (
-                    str(out_glb.relative_to(workspace))
-                    if status == "completed"
-                    else ""
-                ),
-                "worker": worker_id,
-                "error_msg": error_msg,
-                "lpips": None,  # keep placeholders per Step-1
-                "fscore": None,
-                # NEW:
+                "output_glb_relpath": str(out_glb.relative_to(workspace)) if status == "completed" else "",
+                "worker": worker_id, "error_msg": error_msg, "lpips": None, "fscore": None,
                 "unit_price_usd": float(algo_cfg.get("unit_price_usd", 0.0)),
-                "estimated_cost_usd": float(
-                    algo_cfg.get("unit_price_usd", 0.0)
-                ),  # one call per job
+                "estimated_cost_usd": float(algo_cfg.get("unit_price_usd", 0.0)),
                 "price_source": str(algo_cfg.get("price_source", "unknown")),
             }
             _write_result_staging(paths, row)
-
-            # Mark final state and report a concise line to the terminal
-            _rename_atomic(inprog, status)
+            
             if status == "completed":
                 completed_count += 1
             else:
                 failed_count += 1
-                # Minimal operator feedback; keep it one line to avoid noise
-                print(f"[ERROR] {tok.product_id}/{algo}/{tok.job_id} failed → {error_msg}")
+                print(f"[ERROR] {product_id}/{algo} failed: {error_msg}")
 
         except Exception as e:
-            logging.error(f"Worker failed on token {inprog.name}: {e!r}")
-            try:
-                finished_at = _now_iso()
-                duration_s = round(time.perf_counter() - time.perf_counter(), 6)
+            logging.error(f"Worker crashed on {inprog.name}: {e!r}", exc_info=True)
+            error_msg = repr(e)
+            failed_count += 1
+            # Write a failure record even if the worker crashes
+            row = asdict(ExecResult(
+                job_id=job_id, run_id=run_id, product_id=product_id, variant=variant, algo=algo,
+                image_set=",".join(image_files), n_images=len(image_files), img_suffixes=img_suffixes,
+                status="failed", started_at=_now_iso(), finished_at=_now_iso(), duration_s=0,
+                output_glb_relpath="", worker=worker_id, error_msg=error_msg, lpips=None, fscore=None,
+                unit_price_usd=0.0, estimated_cost_usd=0.0, price_source="unknown"
+            ))
+            _write_result_staging(paths, row)
+        finally:
+            _rename_atomic(inprog, status)
+            processed += 1
 
-                # Use variables captured before the exception if possible
-                image_set = ",".join(image_files)
-                n_images = len(image_files)
-
-                status = "failed"
-                error_msg = repr(e)
-
-                row = ExecResult(
-                    job_id=job_id,  # Will be from token or empty
-                    run_id=run_id,
-                    product_id=product_id,
-                    variant=variant,
-                    algo=algo,
-                    image_set=image_set,
-                    n_images=n_images,
-                    img_suffixes=img_suffixes,
-                    status=status,
-                    started_at=_now_iso(),
-                    finished_at=finished_at,
-                    duration_s=duration_s,
-                    output_glb_relpath=output_rel,
-                    worker=worker_id,
-                    error_msg=error_msg,
-                    lpips=None,
-                    fscore=None,
-                    unit_price_usd=0.0,
-                    estimated_cost_usd=0.0,
-                    price_source="unknown",
-                )
-                _write_result_staging(paths, asdict(row))
-            finally:
-                # Mark failed
-                try:
-                    _rename_atomic(inprog, "failed")
-                except Exception:
-                    pass  # token might be gone (e.g., manual interference)
-
-        processed += 1
-
-    # One-line end-of-run summary
-    print(f"Summary: completed={completed_count}  failed={failed_count}  processed={processed}")
+    print(f"Summary: completed={completed_count} failed={failed_count} processed={processed}")
     return {"processed": processed, "completed": completed_count, "failed": failed_count}
