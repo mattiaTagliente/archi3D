@@ -4,7 +4,9 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,12 +15,71 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import yaml
 from filelock import FileLock
+from platformdirs import user_config_path
 
 from archi3d import __version__
 from archi3d.config.paths import PathResolver
-from archi3d.utils.io import write_yaml, write_json
+from archi3d.utils.io import write_json, write_yaml
 from archi3d.utils.text import slugify
 
+
+# -------------------------------------------------
+# Repo config (global.yaml) — lightweight reader
+# -------------------------------------------------
+
+def _candidate_global_yaml_paths() -> list[Path]:
+    """Ordered candidates for global.yaml across dev and frozen runtimes."""
+    cands: list[Path] = []
+    # 1) Explicit override
+    env_path = os.getenv("ARCHI3D_GLOBAL_YAML")
+    if env_path:
+        cands.append(Path(env_path))
+    # 2) CWD upward
+    cur = Path.cwd().resolve()
+    for _ in range(7):
+        cands.append(cur / "global.yaml")
+        if (cur / ".git").exists() or (cur / "pyproject.toml").exists():
+            break
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    # 3) Source tree
+    here = Path(__file__).resolve()
+    cur = here
+    for _ in range(7):
+        if (cur / "pyproject.toml").exists():
+            cands.append(cur / "global.yaml")
+            break
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    # 4) User config
+    cands.append(user_config_path("archi3d") / "global.yaml")
+    # De-dup while preserving order
+    seen = set()
+    return [p for p in cands if p not in seen and not seen.add(p)]
+
+
+def _read_single_image_policy(default: str = "exact_one") -> str:
+    """
+    Resolve global.yaml and read 'batch.single_image_policy'.
+    Defaults to 'exact_one' if not found or invalid.
+    """
+    for p in _candidate_global_yaml_paths():
+        try:
+            if p.exists():
+                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                policy = (data.get("batch", {}).get("single_image_policy") or "").strip()
+                if policy in {"allow_any", "exact_one"}:
+                    return policy
+        except Exception:
+            continue
+    return default
+
+
+# -------------------------------
+# Data Class
+# -------------------------------
 
 @dataclass(frozen=True)
 class ManifestRow:
@@ -52,13 +113,24 @@ def _img_suffixes_from_list(image_files: List[str], max_len: int = 20) -> str:
 # Image selection policies
 # -------------------------------
 
-def _select_for_single(image_files: List[str]) -> Tuple[List[str], Optional[str]]:
+def _select_for_single(image_files: List[str], policy: str) -> Tuple[List[str], Optional[str]]:
+    """
+    Apply the single-image policy.
+      - 'exact_one': Only proceed if the item has exactly one image.
+      - 'allow_any': Pick one image (preferring *_A), even if more are available.
+    """
     if not image_files:
         return [], "no_images"
-    # Prefer *_A, else first
-    a = [p for p in image_files if p.endswith("_A.jpg") or p.endswith("_A.jpeg") or p.endswith("_A.png")]
-    if a:
-        return [a[0]], None
+
+    if policy == "exact_one":
+        if len(image_files) != 1:
+            return [], "policy_requires_exactly_1_image"
+        return [image_files[0]], None
+
+    # Default to 'allow_any' behavior
+    a_matches = [p for p in image_files if re.search(r"_A\.(jpg|jpeg|png)$", p, re.IGNORECASE)]
+    if a_matches:
+        return [a_matches[0]], None
     return [image_files[0]], None
 
 
@@ -79,7 +151,6 @@ def _select_min_n_all(image_files: List[str], n_min: int) -> Tuple[List[str], Op
 def _select_min_max(image_files: List[str], n_min: int, n_max: int) -> Tuple[List[str], Optional[str]]:
     if len(image_files) < n_min:
         return [], f"insufficient_images(min={n_min})"
-    # Deterministic: take first up to n_max
     return image_files[:n_max], None
 
 
@@ -100,10 +171,11 @@ _POLICIES: Dict[str, Tuple[str, Dict]] = {
 }
 
 
-def _apply_policy(algo: str, image_files: List[str]) -> Tuple[List[str], Optional[str]]:
+def _apply_policy(algo: str, image_files: List[str], single_image_policy: str) -> Tuple[List[str], Optional[str]]:
+    """Dispatcher for image selection policies."""
     mode, kwargs = _POLICIES.get(algo, ("", {}))
     if mode == "single":
-        return _select_for_single(image_files)
+        return _select_for_single(image_files, policy=single_image_policy)
     if mode == "first_k":
         return _select_first_k(image_files, **kwargs)
     if mode == "min_all":
@@ -128,11 +200,7 @@ def _now_iso() -> str:
 def _load_items_csv(paths: PathResolver) -> pd.DataFrame:
     p = paths.items_csv
     if not p.exists():
-        raise FileNotFoundError(
-            f"items.csv not found at {p}.\n"
-            "Run 'archi3d catalog build' first."
-        )
-    # Use pandas with explicit UTF-8-SIG encoding
+        raise FileNotFoundError(f"items.csv not found at {p}.\nRun 'archi3d catalog build' first.")
     return pd.read_csv(p, dtype=str, encoding='utf-8-sig').fillna("")
 
 
@@ -149,33 +217,29 @@ def _existing_completed_for_run(paths: PathResolver, run_id: str) -> set[str]:
 
 def _already_queued(queue_dir: Path, job_id_prefix: str) -> bool:
     """Check for any token file that contains the unique job hash identifier."""
-    # The pattern looks for any file ending in '*_h<job_id_prefix>.*.json'
-    # to match the readable token name format.
-    matches = list(queue_dir.glob(f"*_h{job_id_prefix}.*.json"))
-    return len(matches) > 0
+    patterns = [f"*_h{job_id_prefix}.*.json", f"*h{job_id_prefix}.*.json"]
+    for pat in patterns:
+        if list(queue_dir.glob(pat)):
+            return True
+    return False
 
 
 def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str) -> str:
-    """Computes a deterministic job ID from its core components."""
+    """Computes a deterministic job ID from its core components, including code version."""
     material = f"{algo}|{product_id}|{variant}|{image_csv}|{__version__}"
     return _sha1(material)
 
 
 def _readable_token_name(product_id: str, algo: str, n_images: int, img_suffixes: str, run_id: str, job_id: str) -> str:
-    # Use the new slugify and hashing logic for safe filenames
     job8 = job_id[:8]
-    # Slug individual components to keep them clean
     s_pid = slugify(product_id)
     s_algo = slugify(algo)
     s_run = slugify(run_id)
     s_suf = slugify(img_suffixes)
-
     core = f"{s_pid}_{s_algo}_N{n_images}"
     if s_suf:
         core += f"_{s_suf}"
     core += f"_{s_run}_h{job8}"
-    
-    # Enforce a max length for the entire filename core
     return f"{core[:120]}.todo.json"
 
 
@@ -191,11 +255,14 @@ def create_batch(
 ) -> Tuple[Path, Dict]:
     """
     Create a run manifest and queue tokens under runs/<run_id>/queue/.
-    Enforces per-algorithm image count constraints at batch time.
+    Enforces per-algorithm image count constraints and single-image policies.
     Skips jobs already completed for the same (run_id, job_id).
     Returns path to manifest_inputs.csv and a summary dictionary.
     """
     paths.validate_expected_tree()
+
+    # Read single-image policy from global config (defaults to "exact_one")
+    single_image_policy = _read_single_image_policy()
 
     # Freeze run config
     run_cfg_path = paths.run_config_path(run_id)
@@ -204,20 +271,18 @@ def create_batch(
         "created_at": _now_iso(),
         "code_version": __version__,
         "algorithms": algorithms,
+        "batch_config": {"single_image_policy": single_image_policy},
     }
-    # Use the new helper
     write_yaml(run_cfg_path, run_cfg)
 
     items = _load_items_csv(paths)
     if only:
-        # glob filter on product_id
         items = items[items["product_id"].apply(lambda s: fnmatch.fnmatchcase(s, only))].reset_index(drop=True)
 
     queue_dir = paths.queue_dir(run_id)
     _ = paths.outputs_dir(run_id)  # ensure exists
 
     completed_job_ids = _existing_completed_for_run(paths, run_id)
-
     manifest_rows: List[ManifestRow] = []
 
     for _, row in items.iterrows():
@@ -227,14 +292,12 @@ def create_batch(
         image_files = [p for p in row["image_files"].split(";") if p.strip()]
 
         for algo in algorithms:
-            selected, reason = _apply_policy(algo, image_files)
+            selected, reason = _apply_policy(algo, image_files, single_image_policy)
             img_suffixes = _img_suffixes_from_list(selected)
-
             image_csv = ",".join(selected)
             job_id = _compose_job_id(algo, product_id, variant, image_csv)
             job_id8 = job_id[:8]
 
-            # Skip reasons precedence
             if reason:
                 manifest_rows.append(
                     ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, reason)
@@ -253,63 +316,50 @@ def create_batch(
                 )
                 continue
 
-            # Create queue token
             token = {
                 "job_id": job_id,
                 "run_id": run_id,
                 "product_id": product_id,
                 "variant": variant,
                 "algo": algo,
-                "image_files": selected,  # relpaths under 'dataset/...'
-                "gt_fbx_relpath": gt_rel,  # may be empty
+                "image_files": selected,
+                "gt_fbx_relpath": gt_rel,
                 "queued_at": _now_iso(),
                 "code_version": __version__,
             }
             token_name = _readable_token_name(product_id, algo, len(selected), img_suffixes, run_id, job_id)
-            # Use the new helper
             write_json(queue_dir / token_name, token)
 
             manifest_rows.append(
                 ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "")
             )
 
-    # write manifest inputs CSV
     manifest_path = paths.manifest_inputs_csv(run_id)
     mdf = pd.DataFrame(
         [r.__dict__ for r in manifest_rows],
-        columns=[
-            "product_id", "algo", "image_set_csv", "img_suffixes",
-            "n_images", "gt_fbx_relpath", "job_id", "reason",
-        ],
+        columns=["product_id", "algo", "image_set_csv", "img_suffixes", "n_images", "gt_fbx_relpath", "job_id", "reason"],
     ).sort_values(["product_id", "algo"], kind="stable")
 
-    # Also create summary before writing files
     summary = {
         "run_id": run_id,
         "created_at": _now_iso(),
         "code_version": __version__,
         "user_filter": only or "all",
         "algorithms": algorithms,
+        "policy": {"single_image": single_image_policy},
         "counts": {
             "manifest_rows": int(mdf.shape[0]),
             "enqueued": int((mdf["reason"] == "").sum()),
             "skipped": int((mdf["reason"] != "").sum()),
         },
-        # Get counts for each skip reason, excluding empty reasons
         "skip_reasons": mdf[mdf["reason"] != ""]["reason"].value_counts().to_dict(),
     }
 
-    # Use a lock to prevent concurrent writes from multiple users
     lock_path = paths.manifest_lock_path(run_id)
     with FileLock(str(lock_path)):
-        # Write the main manifest, overwriting to reflect the latest state
-        # Use pandas with explicit UTF-8-SIG encoding for Excel compatibility
         mdf.to_csv(manifest_path, index=False, encoding="utf-8-sig")
-
-        # Append the summary to a historical log file
         log_path = manifest_path.with_name("batch_creation_log.yaml")
         with log_path.open("a", encoding="utf-8") as f:
-            # Separate entries with '---' for valid YAML stream
             f.write("---\n")
             yaml.safe_dump(summary, f, allow_unicode=True, sort_keys=False)
 

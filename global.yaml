@@ -14,3 +14,6 @@ algorithms:
 thresholds:
   lpips_max: 0.15
   fscore_min: 0.65
+
+batch:
+  single_image_policy: exact_one   # exact_one | allow_any
