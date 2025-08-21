@@ -211,9 +211,15 @@ def _already_queued(queue_dir: Path, job_id_prefix: str) -> bool:
     return len(list(queue_dir.glob(f"*_h{job_id_prefix}.*.json"))) > 0
 
 
-def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str) -> str:
-    """Computes a deterministic, VERSION-AGNOSTIC job ID for idempotency."""
+def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str, version: Optional[str] = None) -> str:
+    """
+    Computes a deterministic job ID. If a version string is provided, it is
+    included in the hash for backward compatibility with legacy job IDs.
+    Otherwise, the hash is version-agnostic.
+    """
     material = f"{algo}|{product_id}|{variant}|{image_csv}"
+    if version:
+        material += f"|{version}"
     return _sha1(material)
 
 
@@ -236,16 +242,28 @@ def create_batch(
     algorithms: List[str],
     paths: PathResolver,
     only: Optional[str] = None,
+    legacy_version: Optional[str] = None, # Add new parameter
 ) -> Tuple[Path, Dict]:
     """
-    Create a run manifest and queue tokens. Skips jobs already completed
-    for the same run_id to ensure idempotency within a run.
+    Create a run manifest and queue tokens under runs/<run_id>/queue/.
+    Enforces per-algorithm image count constraints and single-image policies.
+    Skips jobs already completed for the same (run_id, job_id).
     """
     paths.validate_expected_tree()
+
     single_image_policy = _read_single_image_policy()
 
     run_cfg_path = paths.run_config_path(run_id)
-    run_cfg = {"run_id": run_id, "created_at": _now_iso(), "code_version": __version__, "algorithms": algorithms, "batch_config": {"single_image_policy": single_image_policy}}
+    run_cfg = {
+        "run_id": run_id,
+        "created_at": _now_iso(),
+        "code_version": __version__,
+        "algorithms": algorithms,
+        "batch_config": {
+            "single_image_policy": single_image_policy,
+            "legacy_version_hashing": legacy_version,
+        },
+    }
     write_yaml(run_cfg_path, run_cfg)
 
     items = _load_items_csv(paths)
@@ -253,7 +271,7 @@ def create_batch(
         items = items[items["product_id"].apply(lambda s: fnmatch.fnmatchcase(s, only))].reset_index(drop=True)
 
     queue_dir = paths.queue_dir(run_id)
-    _ = paths.outputs_dir(run_id)
+    _ = paths.outputs_dir(run_id)  # ensure exists
 
     completed_job_ids = _existing_completed_for_run(paths, run_id)
     manifest_rows: List[ManifestRow] = []
@@ -268,27 +286,47 @@ def create_batch(
             selected, reason = _apply_policy(algo, image_files, single_image_policy)
             img_suffixes = _img_suffixes_from_list(selected)
             image_csv = ",".join(selected)
-            job_id = _compose_job_id(algo, product_id, variant, image_csv)
+            
+            # Use the legacy_version for hashing if provided
+            job_id = _compose_job_id(algo, product_id, variant, image_csv, version=legacy_version)
+            job_id8 = job_id[:8]
 
             if reason:
-                manifest_rows.append(ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, reason))
+                manifest_rows.append(
+                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, reason)
+                )
                 continue
 
             if job_id in completed_job_ids:
-                manifest_rows.append(ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_completed"))
+                manifest_rows.append(
+                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_completed")
+                )
                 continue
 
-            if _already_queued(queue_dir, job_id[:8]):
-                manifest_rows.append(ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_queued"))
+            if _already_queued(queue_dir, job_id8):
+                manifest_rows.append(
+                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_queued")
+                )
                 continue
 
             token = {
-                "job_id": job_id, "run_id": run_id, "product_id": product_id, "variant": variant, "algo": algo,
-                "image_files": selected, "gt_fbx_relpath": gt_rel, "queued_at": _now_iso(), "code_version": __version__,
+                "job_id": job_id,
+                "run_id": run_id,
+                "product_id": product_id,
+                "variant": variant,
+                "algo": algo,
+                "image_files": selected,
+                "gt_fbx_relpath": gt_rel,
+                "queued_at": _now_iso(),
+                "code_version": __version__,
+                "job_id_version": legacy_version, # Store how the ID was generated
             }
             token_name = _readable_token_name(product_id, algo, len(selected), img_suffixes, run_id, job_id)
             write_json(queue_dir / token_name, token)
-            manifest_rows.append(ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, ""))
+
+            manifest_rows.append(
+                ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "")
+            )
 
     manifest_path = paths.manifest_inputs_csv(run_id)
     mdf = pd.DataFrame(
@@ -297,15 +335,18 @@ def create_batch(
     ).sort_values(["product_id", "algo"], kind="stable")
 
     summary = {
-        "run_id": run_id, "created_at": _now_iso(), "code_version": __version__, "user_filter": only or "all",
+        "run_id": run_id,
+        "created_at": _now_iso(),
+        "code_version": __version__,
+        "user_filter": only or "all",
         "algorithms": algorithms,
-        "policy": {"single_image": single_image_policy},
+        "policy": {"single_image": single_image_policy, "legacy_version_hashing": legacy_version},
         "counts": {
-            "manifest_rows": len(mdf),
-            "enqueued": (mdf["reason"] == "").sum(),
-            "skipped": (mdf["reason"] != "").sum(),
+            "manifest_rows": int(mdf.shape[0]),
+            "enqueued": int((mdf["reason"] == "").sum()),
+            "skipped": int((mdf["reason"] != "").sum()),
         },
-        "skip_reasons": mdf[mdf["reason"] != ""]["reason"].value_counts().to_dict(),
+        "skip_reasons": {k: int(v) for k, v in mdf[mdf["reason"] != ""]["reason"].value_counts().to_dict().items()},
     }
 
     lock_path = paths.manifest_lock_path(run_id)

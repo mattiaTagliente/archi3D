@@ -129,6 +129,22 @@ archi3d batch create --run-id "initial-test-run" --only "335888*"
 
 This will create a new folder under `workspace/runs/initial-test-run/` containing the job queue and a historical log of all batch creation operations.
 
+> **Re-running a Batch with a Legacy Version**
+>
+> If you need to re-run the batch creation for an *existing run* that was created with a previous version (e.g., 0.1.0), you can use the `--legacy-version` flag to ensure already-completed jobs are skipped correctly.
+>
+> **How to Use the New Command**
+>
+> You can now re-run your batch creation command for the existing run, specifying the version that was used to create the original jobs (0.1.0).
+>
+> ```bash
+> # Delete the incorrect .todo.json files from the queue first
+> # Then run:
+> archi3d batch create --run-id "2025-08-17_v1" --legacy-version "0.1.0"
+> ```
+>
+> This will correctly match the `job_ids` against those in `results.parquet` and skip the completed jobs. For all new runs with new `run_id`s, you can simply omit the `--legacy-version` flag to use the new, version-agnostic hashing.
+
 **3. Run a Worker to Process Jobs**
 
 Execute the jobs waiting in the queue. Multiple users can run workers simultaneously without conflict. Each completed job will generate a unique result file in the `tables/results_staging/` directory.

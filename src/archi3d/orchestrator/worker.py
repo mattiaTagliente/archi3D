@@ -225,13 +225,27 @@ def run_worker(
             image_files = list(token_json.get("image_files", []))
             img_suffixes = _img_suffixes_from_list(image_files)
 
+            # --- JOB ID INTEGRITY CHECK ---
+            image_csv = ",".join(image_files)
+            
+            # Read the version used for hashing from the token, if it exists.
+            job_id_version = token_json.get("job_id_version")
+
+            # Re-compute the job ID using the exact same function and data
             expected_job_id = _compose_job_id(
-                algo=token_json["algo"], product_id=product_id,
-                variant=variant, image_csv=",".join(image_files)
+                algo=token_json["algo"],
+                product_id=product_id,
+                variant=variant,
+                image_csv=image_csv,
+                version=job_id_version, # Pass the version here
             )
 
             if job_id != expected_job_id:
-                raise ValueError(f"Job ID mismatch. Token: '{job_id}', Computed: '{expected_job_id}'.")
+                raise ValueError(
+                    f"Job ID mismatch. Token has '{job_id}', but content computes to '{expected_job_id}'. "
+                    "The token file may be corrupt or was manually edited."
+                )
+            # --- END OF CHECK ---
 
             variant_slug = _derive_variant_slug(product_id, image_files[0]) if image_files else ""
             glb_name, _ = _compose_output_names(

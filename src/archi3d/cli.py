@@ -201,6 +201,11 @@ def batch_create(
     run_id: str = typer.Option(..., "--run-id", help="Run identifier (required)"),
     algos: Optional[str] = typer.Option(None, "--algos", help="CSV of algorithm keys"),
     only: Optional[str] = typer.Option(None, "--only", help="Filter product_id by glob/regex"),
+    legacy_version: Optional[str] = typer.Option(
+        None,
+        "--legacy-version",
+        help="Use a specific legacy app version for job_id hashing to match old runs.",
+    ),
 ):
     """
     Freeze a run and create the job queue under runs/<run_id>/.
@@ -214,11 +219,16 @@ def batch_create(
     all_algos = list(cfg.global_config.algorithms)
     selected = _parse_algos(algos, all_algos)
 
-    console.print(
-        Panel.fit(
-            f"[bold]Batch create[/bold]\nRun: {run_id}\nAlgos: {', '.join(selected)}\nFilter: {only or '—'}"
-        )
+    panel_text = (
+        f"[bold]Batch create[/bold]\n"
+        f"Run: {run_id}\n"
+        f"Algos: {', '.join(selected)}\n"
+        f"Filter: {only or '—'}"
     )
+    if legacy_version:
+        panel_text += f"\n[yellow]Legacy Version Hashing[/yellow]: {legacy_version}"
+
+    console.print(Panel.fit(panel_text))
 
     try:
         manifest_path, summary = create_batch(
@@ -226,11 +236,12 @@ def batch_create(
             algorithms=selected,
             paths=paths,
             only=only,
+            legacy_version=legacy_version, # Pass the new parameter
         )
     except Exception as e:
         _fail(f"Batch creation failed: {e!r}")
 
-    # Display a rich summary table in the terminal
+    # ... (rest of the function remains the same)
     counts = summary.get("counts", {})
     enqueued = counts.get("enqueued", 0)
     skipped = counts.get("skipped", 0)
