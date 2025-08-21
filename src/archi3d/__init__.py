@@ -15,4 +15,4 @@ Versioning policy: semantic (MAJOR.MINOR.PATCH)
 __all__ = ["__version__"]
 
 # Keep in sync with pyproject.toml [project].version
-__version__ = "0.2.0"
+__version__ = "0.3.0"
