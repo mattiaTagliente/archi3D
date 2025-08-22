@@ -199,8 +199,7 @@ def run_worker(
     worker_id = os.environ.get("ARCHI3D_WORKER_ID") or getpass.getuser()
     processed, completed_count, failed_count = 0, 0, 0
     
-    repo_root = Path(__file__).resolve().parents[3] # Adjusted for src structure
-    ADAPTERS_CFG = load_adapters_cfg(repo_root).get("adapters", {})
+    ADAPTERS_CFG = load_adapters_cfg().get("adapters", {})
     workspace = paths.workspace_root
 
     for todo in tokens:
