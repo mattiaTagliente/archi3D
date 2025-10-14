@@ -3,6 +3,12 @@
 venv/
 env/
 
+# AI Agents
+.claude/
+claude.md
+gemini.md
+agents.md
+
 # Python bytecode and cache
 __pycache__/
 *.pyc
@@ -32,3 +38,6 @@ archi3d_010_PRD.txt
 .vscode/
 .idea/
 .DS_Store
+
+# Plans
+archi3d_delivery_strategy_executive.txt

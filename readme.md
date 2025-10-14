@@ -202,3 +202,11 @@ You have now completed a full end-to-end run of the experiment pipeline\! You ca
 ## ⚖️ License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
+
+## Refactoring
+We are in the middle of a refactoring of the code which aim is to integrate 3 projects into a single one "archi3D", to make the delivery as planned in archi3D_delivery_strategy_executive.txt.
+The 3 projects are:
+- C:\Users\matti\OneDrive - Politecnico di Bari (1)\Dev\archi3d (archi3D)
+- C:\Users\matti\OneDrive - Politecnico di Bari (1)\Dev\FScore (FScore)
+- C:\Users\matti\OneDrive - Politecnico di Bari (1)\Dev\VFScore (VFScore)
+We already prepared a plan for this refactoring and we will disclose it one step at a time
