@@ -4,7 +4,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import Optional, List
-from datetime import datetime
 
 import pandas as pd
 import typer
@@ -27,13 +26,6 @@ def _force_utf8_stdio():
                 # reconfigure might not accept the encoding argument.
                 # We can safely ignore this as it's likely already UTF-8.
                 pass
-
-def _check_date():
-    """Blocks the program from running after a specific date."""
-    expiration_date = datetime(2025, 8, 31)
-    if datetime.now() > expiration_date:
-        console.print(Panel.fit("[red]ERROR[/red] This version of the program has expired."))
-        raise typer.Exit(code=1)
 
 app = typer.Typer(add_completion=False, help="Archi3D CLI")
 catalog_app = typer.Typer(help="Catalog and data operations")
@@ -103,8 +95,7 @@ def _root(
         None, "--version", "-V", help="Show version and exit", is_eager=True
     )
 ):
-    _check_date()
-    _force_utf8_stdio() # <-- ADD THIS LINE
+    _force_utf8_stdio()
     if version:
         console.print(f"archi3d {__version__}")
         raise typer.Exit(0)
