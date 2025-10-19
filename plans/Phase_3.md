@@ -356,3 +356,21 @@ Create `tests/test_phase3_run_worker.py` (or `scripts/dev/phase3_selftest.py`):
 ---
 
 By implementing Phase 3 per this spec, the project will have a **resilient, resumable execution layer** that keeps **`tables/generations.csv`** as the living SSOT for every generation, paving the way for Phase 4 (consolidate) and Phase 5–6 (FScore/VFScore) to enrich the same records in place.
+
+## 📝 IMPORTANT: Update Documentation
+
+**After completing this phase, you MUST update the project documentation:**
+
+1. Update `CLAUDE.md` with:
+   - New functionality added in this phase
+   - Usage examples and patterns
+   - Any new constraints or design patterns
+   - Update the "Implementation Status" section with phase completion details
+
+2. Keep documentation comprehensive and consolidated (avoid creating many small files)
+
+3. The user prefers documentation that retains all information in a few comprehensive files
+
+**This is a critical step - do not consider the phase complete until documentation is updated!**
+
+---

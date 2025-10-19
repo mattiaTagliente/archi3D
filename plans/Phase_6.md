@@ -304,3 +304,20 @@ Place in `tests/test_phase6_compute_vfscore.py` or `scripts/dev/phase6_selftest.
 By completing **Phase 6** per this spec, the pipeline will enrich the **single source of truth** (`tables/generations.csv`) with **visual fidelity metrics**, in a reproducible and idempotent manner, leveraging the workspace layout, atomic I/O, and lifecycle already established in Phases 0–5.
 
 ---
+## 📝 IMPORTANT: Update Documentation
+
+**After completing this phase, you MUST update the project documentation:**
+
+1. Update `CLAUDE.md` with:
+   - New functionality added in this phase
+   - Usage examples and patterns
+   - Any new constraints or design patterns
+   - Update the "Implementation Status" section with phase completion details
+
+2. Keep documentation comprehensive and consolidated (avoid creating many small files)
+
+3. The user prefers documentation that retains all information in a few comprehensive files
+
+**This is a critical step - do not consider the phase complete until documentation is updated!**
+
+---

@@ -169,3 +169,20 @@ Place in `scripts/dev/phase9_selftest.py`:
 By completing **Phase 9** as specified, the project gains **explicit, code-level schemas** for both SSOT tables, reliable **validation utilities**, and **developer docs**—all without changing Phase 0–8 behaviors. This reduces drift, improves auditability for Phase 7 reporting and Phase 8 adapters, and hardens the pipeline’s long-term maintainability. 
 
 ---
+## 📝 IMPORTANT: Update Documentation
+
+**After completing this phase, you MUST update the project documentation:**
+
+1. Update `CLAUDE.md` with:
+   - New functionality added in this phase
+   - Usage examples and patterns
+   - Any new constraints or design patterns
+   - Update the "Implementation Status" section with phase completion details
+
+2. Keep documentation comprehensive and consolidated (avoid creating many small files)
+
+3. The user prefers documentation that retains all information in a few comprehensive files
+
+**This is a critical step - do not consider the phase complete until documentation is updated!**
+
+---

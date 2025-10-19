@@ -256,3 +256,20 @@ tests/test_api.py             # API smoke test
 With these changes, FScore will be **plug-and-play** for archi3D **Phase 5** and ready for **Phase 8** discovery (import/CLI), without touching the SSOT schemas or the semantics of the archi3D commands.
 
 ---
+## 📝 IMPORTANT: Update Documentation
+
+**After completing this phase, you MUST update the project documentation:**
+
+1. Update `CLAUDE.md` with:
+   - New functionality added in this phase
+   - Usage examples and patterns
+   - Any new constraints or design patterns
+   - Update the "Implementation Status" section with phase completion details
+
+2. Keep documentation comprehensive and consolidated (avoid creating many small files)
+
+3. The user prefers documentation that retains all information in a few comprehensive files
+
+**This is a critical step - do not consider the phase complete until documentation is updated!**
+
+---

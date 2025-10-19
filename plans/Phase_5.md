@@ -283,3 +283,20 @@ Place under `tests/test_phase5_compute_fscore.py` (or `scripts/dev/phase5_selfte
 By completing Phase 5 as above, we extend the **single source of truth** (`tables/generations.csv`) with **geometry metrics** in a reproducible and idempotent way, leveraging the workspace layout, atomic I/O, and job lifecycle already established in Phases 0–4.
 
 ---
+## 📝 IMPORTANT: Update Documentation
+
+**After completing this phase, you MUST update the project documentation:**
+
+1. Update `CLAUDE.md` with:
+   - New functionality added in this phase
+   - Usage examples and patterns
+   - Any new constraints or design patterns
+   - Update the "Implementation Status" section with phase completion details
+
+2. Keep documentation comprehensive and consolidated (avoid creating many small files)
+
+3. The user prefers documentation that retains all information in a few comprehensive files
+
+**This is a critical step - do not consider the phase complete until documentation is updated!**
+
+---

@@ -262,3 +262,20 @@ Create `tests/test_phase7_report.py` or `scripts/dev/phase7_selftest.py`:
 By completing **Phase 7** per this spec, the project delivers **auditable, portable reports** driven solely by the **Single Source of Truth** and applies a transparent **Quality Gate** aligned with configured thresholds—cleanly building on Phases 0–6 without altering their behavior.
 
 ---
+## 📝 IMPORTANT: Update Documentation
+
+**After completing this phase, you MUST update the project documentation:**
+
+1. Update `CLAUDE.md` with:
+   - New functionality added in this phase
+   - Usage examples and patterns
+   - Any new constraints or design patterns
+   - Update the "Implementation Status" section with phase completion details
+
+2. Keep documentation comprehensive and consolidated (avoid creating many small files)
+
+3. The user prefers documentation that retains all information in a few comprehensive files
+
+**This is a critical step - do not consider the phase complete until documentation is updated!**
+
+---

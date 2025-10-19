@@ -278,3 +278,21 @@ Run with `--algos tripo3d_v2p5,trellis_single`.
 ---
 
 By completing Phase 2 per this spec, the project will have a stable, queryable **SSOT for generated artifacts** and a reproducible **run manifest**, enabling Phases 3–6 to update the same registry in place.
+
+## 📝 IMPORTANT: Update Documentation
+
+**After completing this phase, you MUST update the project documentation:**
+
+1. Update `CLAUDE.md` with:
+   - New functionality added in this phase
+   - Usage examples and patterns
+   - Any new constraints or design patterns
+   - Update the "Implementation Status" section with phase completion details
+
+2. Keep documentation comprehensive and consolidated (avoid creating many small files)
+
+3. The user prefers documentation that retains all information in a few comprehensive files
+
+**This is a critical step - do not consider the phase complete until documentation is updated!**
+
+---
