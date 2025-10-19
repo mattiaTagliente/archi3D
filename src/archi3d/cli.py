@@ -105,34 +105,81 @@ def _root(
 # ---------------------------
 
 @catalog_app.command("build")
-def catalog_build():
+def catalog_build(
+    dataset: Optional[Path] = typer.Option(None, "--dataset", help="Dataset directory path"),
+    products_json: Optional[Path] = typer.Option(None, "--products-json", help="Path to products-with-3d.json"),
+):
     """
-    Scan dataset tree and build/update tables/items.csv.
-    Workspace is resolved from config/env; no path defaults are assumed here.
+    Scan the curated dataset and build tables/items.csv with enrichment from products-with-3d.json.
+    Writes items.csv, items_issues.csv, and logs to catalog_build.log.
     """
-    cfg, paths = _load_runtime()
+    _, paths = _load_runtime()
 
     try:
-        from archi3d.io.catalog import build_items_csv
+        from archi3d.db.catalog import build_catalog
     except Exception as e:  # noqa: BLE001
-        _fail(f"Missing module archi3d.io.catalog (build_items_csv). Import error: {e!r}")
+        _fail(f"Missing module archi3d.db.catalog (build_catalog). Import error: {e!r}")
 
-    dataset = paths.dataset_root
-    out_csv = paths.tables_dir / "items.csv"
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    # Resolve dataset path with defaults and validation
+    if dataset is None:
+        dataset = paths.dataset_root
+    else:
+        dataset = Path(dataset).resolve()
 
-    console.print(Panel.fit(f"[bold]Catalog build[/bold]\nDataset: {dataset}\nOut: {out_csv}"))
+    if not dataset.exists():
+        _fail(f"Dataset directory not found: {dataset}")
+
+    # Resolve products JSON path with auto-discovery
+    if products_json is None:
+        # Default: ${workspace}/products-with-3d.json
+        products_json = paths.workspace_root / "products-with-3d.json"
+
+        # Auto-discovery: try one level up from workspace if default doesn't exist
+        if not products_json.exists():
+            fallback = paths.workspace_root.parent / "products-with-3d.json"
+            if fallback.exists():
+                products_json = fallback
+                console.print(f"[yellow]Auto-discovered products JSON at: {products_json}[/yellow]")
+            else:
+                console.print(
+                    f"[yellow]Warning: products-with-3d.json not found. "
+                    f"Proceeding without enrichment.[/yellow]"
+                )
+                products_json = None
+    else:
+        products_json = Path(products_json).resolve()
+        if not products_json.exists():
+            console.print(
+                f"[yellow]Warning: Specified products JSON not found: {products_json}. "
+                f"Proceeding without enrichment.[/yellow]"
+            )
+            products_json = None
+
+    # Display build information
+    panel_text = f"[bold]Catalog build[/bold]\nDataset: {dataset}"
+    if products_json:
+        panel_text += f"\nProducts JSON: {products_json}"
+    else:
+        panel_text += "\nProducts JSON: [yellow]Not available[/yellow]"
+
+    console.print(Panel.fit(panel_text))
+
+    # Execute build
     try:
-        stats = build_items_csv(dataset_root=dataset, out_csv=out_csv)
+        items_count, issues_count = build_catalog(
+            dataset_path=dataset,
+            products_json_path=products_json,
+            paths=paths
+        )
     except Exception as e:  # noqa: BLE001
         _fail(f"Catalog build failed: {e!r}")
 
-    table = Table(title="Catalog Summary")
-    table.add_column("Items", justify="right")
-    table.add_column("With GT", justify="right")
-    table.add_column("With ≥1 image", justify="right")
-    table.add_row(str(stats.items_total), str(stats.items_with_gt), str(stats.items_with_img))
-    console.print(table)
+    # Display summary
+    console.print(
+        f"\n[green]Catalog build complete![/green]\n"
+        f"  Items: {items_count}\n"
+        f"  Issues: {issues_count}"
+    )
 
 # ---------------------------
 # catalog consolidate
