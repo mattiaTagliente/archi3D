@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from .schema import EffectiveConfig
 
@@ -29,10 +28,16 @@ class PathResolver:
         self.runs_dir: Path = self.workspace_root / "runs"
         self.tables_dir: Path = self.workspace_root / "tables"
         self.reports_dir: Path = self.workspace_root / "reports"
+        self.logs_dir: Path = self.workspace_root / "logs"
+
+        # Aliases for Phase 0 naming convention
+        self.tables_root: Path = self.tables_dir
+        self.runs_root: Path = self.runs_dir
+        self.reports_root: Path = self.reports_dir
+        self.logs_root: Path = self.logs_dir
 
         # Create mutable dirs if missing
-        for d in (self.runs_dir, self.tables_dir, self.reports_dir):
-            d.mkdir(parents=True, exist_ok=True)
+        self.ensure_mutable_tree()
 
         # Canonical table files (created by commands when needed)
         self.items_csv: Path = self.tables_dir / "items.csv"
@@ -57,7 +62,7 @@ class PathResolver:
         q.mkdir(parents=True, exist_ok=True)
         return q
 
-    def outputs_dir(self, run_id: str, algo: Optional[str] = None) -> Path:
+    def outputs_dir(self, run_id: str, algo: str | None = None) -> Path:
         base = self.run_dir(run_id) / "outputs"
         base.mkdir(parents=True, exist_ok=True)
         if algo:
@@ -112,3 +117,42 @@ class PathResolver:
                 f"Dataset root not found: {self.dataset_root}\n"
                 "Please verify your 'workspace/dataset' path."
             )
+
+    def ensure_mutable_tree(self) -> None:
+        """
+        Create mutable workspace directories (tables/, runs/, reports/, logs/)
+        if they don't exist. Safe to call multiple times (idempotent).
+        """
+        for d in (self.tables_dir, self.runs_dir, self.reports_dir, self.logs_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+    # -------------------------
+    # File path getters (Phase 0 SSOT)
+    # -------------------------
+    def items_csv_path(self) -> Path:
+        """Path to the canonical items catalog CSV."""
+        return self.tables_dir / "items.csv"
+
+    def items_issues_csv_path(self) -> Path:
+        """Path to the items issues/validation CSV."""
+        return self.tables_dir / "items_issues.csv"
+
+    def generations_csv_path(self) -> Path:
+        """Path to the generations/results CSV."""
+        return self.tables_dir / "generations.csv"
+
+    def catalog_build_log_path(self) -> Path:
+        """Path to the catalog build log."""
+        return self.logs_dir / "catalog_build.log"
+
+    def batch_create_log_path(self) -> Path:
+        """Path to the batch create log."""
+        return self.logs_dir / "batch_create.log"
+
+    def worker_log_path(self) -> Path:
+        """Path to the worker execution log."""
+        return self.logs_dir / "worker.log"
+
+    def metrics_log_path(self) -> Path:
+        """Path to the metrics computation log."""
+        return self.logs_dir / "metrics.log"
