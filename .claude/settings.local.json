@@ -3,7 +3,20 @@
     "allow": [
       "Bash(python -m pytest tests/test_phase1_catalog_build.py -v)",
       "Bash(python -m pytest tests/test_phase2_batch_create.py -v)",
-      "Bash(python -m pytest tests/ -v)"
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(ls \"C:\\Users\\matti\\OneDrive - Politecnico di Bari (1)\\Dev\\archi3D\\tests\")",
+      "Bash(pytest tests/test_phase3_run_worker.py -v)",
+      "Bash(pytest tests/test_phase3_run_worker.py::test_dry_run_success -v)",
+      "Bash(pytest tests/test_phase3_run_worker.py::test_dry_run_success -v --tb=short)",
+      "Bash(pytest tests/test_phase3_run_worker.py::test_dry_run_success -v -s)",
+      "Bash(pytest tests/test_phase3_run_worker.py -v --tb=short)",
+      "Bash(ruff check --fix src/archi3d/orchestrator/worker.py src/archi3d/adapters/base.py src/archi3d/config/paths.py src/archi3d/cli.py)",
+      "Bash(black src/archi3d/orchestrator/worker.py src/archi3d/adapters/base.py src/archi3d/config/paths.py)",
+      "Bash(python -m pytest tests/test_phase3_run_worker.py -v)",
+      "Bash(python -m pytest tests/test_phase3_run_worker.py::test_resumability -v -s)",
+      "Bash(python -m pytest tests/ -v --tb=no -q)",
+      "Bash(ruff check --fix src/archi3d/orchestrator/worker.py)",
+      "Bash(black src/archi3d/orchestrator/worker.py)"
     ],
     "deny": [],
     "ask": []
