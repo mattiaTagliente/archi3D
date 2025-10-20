@@ -4,10 +4,10 @@ venv/
 env/
 
 # AI Agents
-.claude/
-claude.md
-gemini.md
-agents.md
+#.claude/
+#claude.md
+#gemini.md
+#agents.md
 
 # Python bytecode and cache
 __pycache__/
