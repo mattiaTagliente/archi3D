@@ -16,7 +16,14 @@
       "Bash(python -m pytest tests/test_phase3_run_worker.py::test_resumability -v -s)",
       "Bash(python -m pytest tests/ -v --tb=no -q)",
       "Bash(ruff check --fix src/archi3d/orchestrator/worker.py)",
-      "Bash(black src/archi3d/orchestrator/worker.py)"
+      "Bash(black src/archi3d/orchestrator/worker.py)",
+      "Bash(pytest tests/test_phase4_consolidate.py -v)",
+      "Bash(pytest tests/test_phase4_consolidate.py::test_consolidate_merge_duplicates -v)",
+      "Bash(ruff check --fix src/archi3d/orchestrator/consolidate.py src/archi3d/cli.py tests/test_phase4_consolidate.py)",
+      "Bash(black src/archi3d/orchestrator/consolidate.py src/archi3d/cli.py tests/test_phase4_consolidate.py)",
+      "Bash(mypy src/archi3d/orchestrator/consolidate.py)",
+      "Bash(pytest tests/test_phase4_consolidate.py -v --tb=short)",
+      "Bash(git add src/archi3d/orchestrator/consolidate.py tests/test_phase4_consolidate.py src/archi3d/cli.py CLAUDE.md readme.md .claude/settings.local.json)"
     ],
     "deny": [],
     "ask": []

@@ -672,3 +672,116 @@ archi3d run worker --run-id "test-run" --fail-fast
 - Job filtering uses simple substring matching (not regex/glob).
 
 **Next Phase**: Phase 4+ (metrics computation, FScore/VFScore integration)
+
+### Phase 4 — Consolidate ✅ COMPLETE
+
+**Objective**: Reconcile tables/generations.csv with on-disk artifacts and state markers to ensure SSOT consistency, deduplicate rows, and fill missing metadata.
+
+**Implemented Components**:
+
+1. **Consolidation Logic** (`src/archi3d/orchestrator/consolidate.py`):
+   - `consolidate(run_id, paths, ...)` — Main entry point for reconciliation
+   - `_gather_evidence(row, run_id, state_dir, outputs_dir, paths)` — Collects evidence from disk (markers, artifacts, error files)
+   - `_determine_desired_status(evidence, csv_status)` — Applies truth table to determine correct status
+   - `_reconcile_row(row, evidence, desired_status, ...)` — Reconciles single row with evidence
+   - `_merge_duplicate_rows(rows)` — Merges duplicate (run_id, job_id) rows by keeping most complete information
+   - `_consolidate_run(run_id, paths, ...)` — Per-run reconciliation orchestrator
+
+2. **CLI Integration** (`src/archi3d/cli.py`):
+   - `archi3d consolidate` command with Phase 4 flags:
+     - `--run-id` (required) — Run identifier
+     - `--dry-run` (default: False) — Compute changes without writing CSV
+     - `--strict` (default: False) — Exit with error on any conflict
+     - `--only-status` (optional) — Comma-separated statuses to process
+     - `--fix-status` (default: True) — Apply status downgrades for missing outputs
+     - `--max-rows` (optional) — Cap on rows to process for safety
+   - Rich console output with summary tables and status histograms
+
+3. **Reconciliation Rules**:
+   - **Status Truth Table** (priority order):
+     1. `.completed` marker + `generated.glb` exists → `status=completed`
+     2. `.failed` marker exists → `status=failed`
+     3. `.inprogress` marker + heartbeat fresh (<10 min) → `status=running`
+     4. No markers/artifacts → keep CSV status (default `enqueued`)
+   - **Downgrade Logic**: CSV says `completed` but `generated.glb` missing → downgrade to `failed` with error_msg (if `--fix-status`)
+   - **Timestamp Filling**: Best-effort synthesis from marker/artifact mtimes
+   - **Path Normalization**: Fills `gen_object_path`, `preview_*_path` with workspace-relative paths
+   - **Error Message Filling**: Reads first ~2000 chars from `error.txt` if `error_msg` empty
+
+4. **Duplicate Handling**:
+   - Detects duplicate (run_id, job_id) rows in CSV
+   - Merges duplicates using smart precedence:
+     - Prefers row with highest status precedence (completed > failed > running > enqueued)
+     - Column-wise: keeps non-empty/non-NaN values
+     - Result: single merged row with union of non-empty fields
+   - Special upsert path: removes all run_id rows, then inserts deduplicated data (avoids pandas merge issues with duplicates)
+
+5. **Structured Logging** (`logs/metrics.log`):
+   - JSON-formatted summary with counters:
+     - `considered`, `upsert_inserted`, `upsert_updated`, `unchanged`
+     - `conflicts_resolved`, `marker_mismatches_fixed`, `downgraded_missing_output`
+     - `status_histogram_before`, `status_histogram_after`
+   - Includes `dry_run` flag for audit trail
+
+6. **Test Suite** (`tests/test_phase4_consolidate.py`):
+   - 7 comprehensive tests covering all requirements:
+     1. Happy path (completed jobs with full artifacts, minimal changes)
+     2. Downgrade missing output (CSV says completed but GLB missing)
+     3. Merge duplicates (duplicate rows merged to single row with union of fields)
+     4. Heartbeat stale (inprogress marker >10 min old, keeps running status per spec)
+     5. Dry-run mode (no CSV writes, log includes dry_run flag)
+     6. Idempotency (re-running yields minimal/no updates after first run)
+     7. No CSV exists (handles missing generations.csv gracefully)
+   - All 7 tests passing
+
+**Key Features**:
+- **Idempotent Reconciliation**: Re-running without changes yields `upsert_updated≈0`
+- **Conflict Resolution**: Merges duplicate rows with smart precedence rules
+- **Status Validation**: Downgrades incorrect statuses based on on-disk evidence
+- **Metadata Filling**: Synthesizes missing timestamps, paths, error messages from artifacts
+- **Atomic Updates**: Uses Phase 0 `update_csv_atomic()` with FileLock for safety
+- **Dry-Run Mode**: Preview changes without modifying CSV
+- **Flexible Filtering**: Process specific statuses, cap rows for safety
+- **Heartbeat Detection**: Identifies stale `inprogress` markers (>10 min old)
+
+**CLI Examples**:
+```bash
+# Basic usage (reconcile all jobs for a run)
+archi3d consolidate --run-id "2025-10-20-experiment"
+
+# Dry-run mode (preview changes without writes)
+archi3d consolidate --run-id "test-run" --dry-run
+
+# Process only specific statuses
+archi3d consolidate --run-id "prod-run" --only-status "completed,failed"
+
+# Disable status downgrades
+archi3d consolidate --run-id "test-run" --fix-status=false
+
+# Strict mode (fail on any conflict)
+archi3d consolidate --run-id "test-run" --strict
+
+# Safety cap (process max 100 rows)
+archi3d consolidate --run-id "large-run" --max-rows 100
+```
+
+**Design Patterns**:
+- **Evidence-Based Reconciliation**: Gathers disk evidence before making decisions
+- **Truth Table Logic**: Clear precedence rules for status determination
+- **Smart Merging**: Column-wise union for duplicate row resolution
+- **Workspace-Relative Paths**: All stored paths use POSIX format relative to workspace
+- **Atomic Deduplication**: Special upsert path for handling CSV duplicates cleanly
+
+**Non-Functional Changes**:
+- No changes to Phases 0-3 functionality
+- All writes use Phase 0 atomic I/O utilities
+- Linting/formatting applied (ruff, black)
+- Mypy type checking passed (pandas stub warnings ignored)
+
+**Known Constraints**:
+- Heartbeat freshness threshold: 10 minutes (configurable via constant)
+- Error message truncation: 2000 characters (when reading from error.txt)
+- Stale heartbeat behavior: keeps `running` status (documented as "leave as is")
+- Status filtering uses simple string matching (not regex/glob)
+
+**Next Phase**: Phase 5+ (metrics computation with FScore/VFScore integration)

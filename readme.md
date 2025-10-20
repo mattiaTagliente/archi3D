@@ -217,15 +217,67 @@ archi3d run worker --run-id "test-run" --fail-fast
 - Execution logs: `logs/worker.log`
 - SSOT updates: `tables/generations.csv` (with status, timing, worker, outputs, costs)
 
-**4. Consolidate Results**
+**4. Consolidate Results (Phase 4)**
 
-Before you can compute metrics or build reports, you must consolidate the individual result files from the staging area into the main `tables/results.parquet` file.
+After running workers, reconcile the SSOT (`tables/generations.csv`) with on-disk artifacts and state markers to ensure consistency, fill missing metadata, and resolve any conflicts. This step ensures your data is clean and complete before proceeding to metrics and reporting.
 
+**Basic Usage:**
+```bash
+# Reconcile all jobs for a run
+archi3d consolidate --run-id "2025-10-20-experiment"
+
+# Dry-run mode (preview changes without writes)
+archi3d consolidate --run-id "test-run" --dry-run
 ```
+
+**Common Options:**
+  * `--run-id`: Run identifier (required)
+  * `--dry-run`: Compute changes without writing CSV (default: false)
+  * `--strict`: Exit with error on any conflict (default: false)
+  * `--only-status`: Comma-separated statuses to process (e.g., "completed,failed")
+  * `--fix-status`: Apply status downgrades for missing outputs (default: true)
+  * `--max-rows`: Maximum rows to process (optional cap for safety)
+
+**Examples:**
+```bash
+# Process only specific statuses
+archi3d consolidate --run-id "prod-run" --only-status "completed,failed"
+
+# Disable status downgrades
+archi3d consolidate --run-id "test-run" --fix-status=false
+
+# Strict mode (fail on any conflict)
+archi3d consolidate --run-id "test-run" --strict
+
+# Safety cap (process max 100 rows)
+archi3d consolidate --run-id "large-run" --max-rows 100
+```
+
+**Key Features:**
+- **Status Validation**: Downgrades incorrect statuses (e.g., CSV says "completed" but generated.glb missing)
+- **Duplicate Resolution**: Merges duplicate (run_id, job_id) rows intelligently
+- **Metadata Filling**: Synthesizes missing timestamps, paths, error messages from disk artifacts
+- **Idempotent**: Re-running yields minimal changes after first reconciliation
+- **Atomic Updates**: Safe concurrent access via FileLock
+- **Heartbeat Detection**: Identifies stale "running" jobs (>10 min old)
+
+**What It Does:**
+- Validates status against on-disk markers (`.completed`, `.failed`, `.inprogress`) and artifacts (`generated.glb`)
+- Fills missing `gen_object_path`, `preview_*_path` with workspace-relative paths
+- Recomputes `generation_duration_s` from timestamps
+- Reads error messages from `error.txt` files when missing in CSV
+- Deduplicates rows by keeping most complete information
+- Emits structured summary to `logs/metrics.log`
+
+**4b. Legacy Consolidate (Phase 0-2)**
+
+For backward compatibility, the old consolidate command for results staging is still available:
+
+```bash
 archi3d catalog consolidate
 ```
 
-This command safely gathers all new results, merges them into the master table, and cleans up the staging area.
+This gathers individual result files from the staging area into the main `tables/results.parquet` file (legacy behavior from Phases 0-2).
 
 **5. Compute Metrics**
 
