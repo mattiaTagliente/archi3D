@@ -66,14 +66,44 @@ class PathResolver:
         q.mkdir(parents=True, exist_ok=True)
         return q
 
-    def outputs_dir(self, run_id: str, algo: str | None = None) -> Path:
+    def outputs_dir(self, run_id: str, algo: str | None = None, job_id: str | None = None) -> Path:
+        """
+        Get the outputs directory for a run, optionally scoped to algo and/or job_id.
+
+        Phase 3: Supports per-job output directories under runs/<run_id>/outputs/<job_id>/
+        """
         base = self.run_dir(run_id) / "outputs"
         base.mkdir(parents=True, exist_ok=True)
+
+        # Phase 3: job_id-scoped outputs
+        if job_id:
+            job_out = base / job_id
+            job_out.mkdir(parents=True, exist_ok=True)
+            return job_out
+
+        # Legacy: algo-scoped outputs
         if algo:
             a = base / algo
             a.mkdir(parents=True, exist_ok=True)
             return a
+
         return base
+
+    def state_dir(self, run_id: str) -> Path:
+        """
+        Get the state directory for worker marker files.
+        Phase 3: runs/<run_id>/state/
+        """
+        s = self.run_dir(run_id) / "state"
+        s.mkdir(parents=True, exist_ok=True)
+        return s
+
+    def state_lock_path(self, run_id: str, job_id: str) -> Path:
+        """
+        Get the lock file path for a specific job's state transitions.
+        Phase 3: runs/<run_id>/state/<job_id>.lock
+        """
+        return self.state_dir(run_id) / f"{job_id}.lock"
 
     def metrics_dir(self, run_id: str) -> Path:
         m = self.run_dir(run_id) / "metrics"

@@ -94,45 +94,25 @@ Under `runs/<run_id>/` create:
 
 These marker files enable **resumability** and are used alongside SSOT updates.
 
-### D) Job Lifecycle & State Machine
+### D) Job Lifecycle & State Machine (Batch Upsert Refactor)
 
-Per job:
+The worker was refactored to eliminate concurrent CSV writes and prevent race conditions. The lifecycle is now managed through state markers, with a single atomic CSV update at the end.
 
-1. **Pick**: eligible if `(status in allowed)` and **no** `.inprogress|.completed|.failed` marker present, **or** resumable case:
+**Per job execution within the thread pool:**
 
-   * If `status=running` but `.inprogress` exists without recent heartbeats and `--only-status` includes `running`, allow **resume** (see concurrency section).
-2. **Mark running**:
+1.  **Claim Job**: Atomically rename `state/<job_id>.lock` to prevent other workers from picking up the same job. Create `.inprogress` marker.
+2.  **Execute Adapter**: Run the generation logic.
+3.  **Collect Results**: On success or failure, the `_execute_job` function **returns a dictionary** containing all the data to be upserted into `generations.csv`. **It does not write to the CSV itself.**
+4.  **Finalize State Markers**:
+    *   **On success**: Write output artifacts (`generated.glb`, etc.) and rename the marker to `state/<job_id>.completed`.
+    *   **On failure**: Write `error.txt` and rename the marker to `state/<job_id>.failed`.
 
-   * Create `state/<job_id>.inprogress` (write PID/host/timestamp).
-   * Upsert `tables/generations.csv`:
+**At the end of the `run_worker` function:**
 
-     * `status="running"`
-     * `generation_start=<ISO8601 UTC>`
-     * `worker_host`, `worker_user`, `worker_gpu` (best effort), `worker_env`, `worker_commit` (if available)
-3. **Execute adapter** (unless `--dry-run`; see Adapter Contract).
-4. **On success**:
+1.  **Aggregate Results**: Collect all result dictionaries from the completed jobs in the thread pool.
+2.  **Batch Upsert**: Perform a **single, atomic `update_csv_atomic`** operation to upsert all collected results into `tables/generations.csv`. This is protected by a `FileLock` and eliminates the race condition that previously caused `NaN` corruption.
 
-   * Write artifacts in `outputs/<job_id>/…`
-   * Upsert `tables/generations.csv` with:
-
-     * `status="completed"`
-     * `generation_end`, `generation_duration_s`
-     * `gen_object_path="runs/<run_id>/outputs/<job_id>/generated.glb"` (workspace-relative)
-     * `preview_1_path…preview_3_path` if created
-     * `algo_version` (from adapter), plus any **cost** fields if returned (`unit_price_usd`, `estimated_cost_usd`, `price_source`)
-   * Rename marker to `state/<job_id>.completed`
-5. **On failure (catch all exceptions)**:
-
-   * Write `state/<job_id>.error.txt` with traceback/summary
-   * Upsert `tables/generations.csv`:
-
-     * `status="failed"`
-     * `generation_end`, `generation_duration_s`
-     * `error_msg` (truncated; keep full text in `error.txt`)
-   * Rename marker to `state/<job_id>.failed`
-   * If `--fail-fast`, stop the run with a non-zero exit.
-
-> **Idempotency**: If a job is already `completed` and has a `.completed` marker, **skip** (count as already done). If mismatched (e.g., CSV says completed but marker missing), log a warning and treat as completed unless `--only-status` includes `running` and user is explicitly re-running.
+> **Idempotency & Resumability**: The state markers (`.completed`, `.failed`) are the primary mechanism for ensuring jobs are not re-processed. When a worker starts, it scans for these markers and skips any jobs that are already done, regardless of the state in `generations.csv`. This makes the system resilient to interruptions.
 
 ### E) Adapter Contract (minimal, stable)
 
@@ -214,12 +194,12 @@ Use Phase-0 `update_csv_atomic(path, df_new, key_cols=["run_id","job_id"])`.
 
 All paths **must be workspace-relative** using `PathResolver.rel_to_workspace(...)`. Use UTF-8-SIG CSV encoding and atomic+locked writes.
 
-### G) Concurrency, Heartbeats & Resumability
+### G) Concurrency & Resumability (Batch Upsert Model)
 
-* Use a **thread pool** size `--max-parallel`.
-* For each running job, write a **heartbeat** (touch/update) inside `state/<job_id>.inprogress` every ~10–30s with PID & timestamp.
-* On start, if a job has `status=running` but the `.inprogress` file timestamp is **stale** (e.g., older than 10 minutes) and `--only-status` includes `running`, **resume** it (overwrite the inprogress marker).
-* Ensure **single-runner safety**: use a per-job **`FileLock`** on `state/<job_id>.lock` during state transitions and upserts to avoid double execution if two workers accidentally target the same run.
+*   **Concurrency**: A thread pool (`--max-parallel`) executes jobs concurrently.
+*   **Race Condition Elimination**: The primary change is the removal of per-job concurrent writes. The worker collects all results and performs a **single batch upsert** at the end, protected by `FileLock`. This completely resolves the pandas merge race condition.
+*   **Safety**: State markers (`.inprogress`, `.completed`, `.failed`) provide thread and multi-user safety. An atomic rename to `.inprogress` ensures that even if multiple workers start simultaneously, a job can only be claimed and processed by one worker.
+*   **Resumability**: If a worker is interrupted, the state markers ensure that a subsequent run will safely skip completed jobs and can resume failed or stuck ones. The SSOT (`generations.csv`) is only updated with the final results of a successful worker run.
 
 ### H) Logging & Summary
 

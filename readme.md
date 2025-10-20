@@ -162,13 +162,60 @@ archi3d batch create --run-id "preview" --algos tripo3d_v2p5 --dry-run
 - **Atomic operations**: Safe for concurrent access via file locking
 - **Flexible filtering**: Include/exclude patterns, GT-only mode, item limits
 
-**3. Run a Worker to Process Jobs**
+**3. Run a Worker to Process Jobs (Phase 3)**
 
-Execute the jobs waiting in the queue. Multiple users can run workers simultaneously without conflict. Each completed job will generate a unique result file in the `tables/results_staging/` directory.
+Execute the jobs created by batch create. Phase 3 brings robust lifecycle management, resumability, and concurrent execution support. Workers read from `tables/generations.csv` (the SSOT) and update it with execution results, worker metadata, and output paths.
 
+**Basic Usage:**
+```bash
+# Process all enqueued jobs for a run
+archi3d run worker --run-id "initial-test-run"
+
+# Dry-run mode (test without calling adapters)
+archi3d run worker --run-id "test-run" --dry-run
+
+# Concurrent execution with 4 workers
+archi3d run worker --run-id "prod-run" --max-parallel 4
 ```
-archi3d run worker --run-id "initial-test-run" --algo "tripo3d_v2p5_multi" --limit 5
+
+**Common Options:**
+  * `--run-id`: Run identifier (required)
+  * `--jobs`: Filter job_id by substring (e.g., `--jobs "59ad"`)
+  * `--only-status`: Comma-separated statuses to process (default: "enqueued")
+  * `--max-parallel`: Maximum concurrent workers (default: 1)
+  * `--adapter`: Force specific adapter for debugging
+  * `--dry-run`: Simulate execution without calling adapters
+  * `--fail-fast`: Stop on first failure
+
+**Examples:**
+```bash
+# Resume stuck "running" jobs after interruption
+archi3d run worker --run-id "interrupted-run" --only-status running
+
+# Process specific jobs by substring
+archi3d run worker --run-id "test-run" --jobs "59ad"
+
+# Force specific adapter (debug mode)
+archi3d run worker --run-id "test-run" --adapter test_algo_1
+
+# Stop on first failure
+archi3d run worker --run-id "test-run" --fail-fast
 ```
+
+**Key Features:**
+- **Resumable execution**: State markers prevent duplicate work after interruption
+- **Concurrent execution**: Thread pool with configurable parallelism
+- **Worker observability**: Captures host, user, GPU, environment, commit
+- **Atomic updates**: Safe concurrent access to SSOT via FileLock
+- **Cost tracking**: Automatic cost tracking from adapters.yaml
+- **Error handling**: Full error details in error.txt, summary in CSV
+
+**Output Locations:**
+- Job outputs: `runs/<run_id>/outputs/<job_id>/generated.glb` (and optional previews)
+- State markers: `runs/<run_id>/state/<job_id>.{inprogress|completed|failed}`
+- Error details: `runs/<run_id>/state/<job_id>.error.txt`
+- Execution logs: `logs/worker.log`
+- SSOT updates: `tables/generations.csv` (with status, timing, worker, outputs, costs)
 
 **4. Consolidate Results**
 

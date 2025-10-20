@@ -525,4 +525,150 @@ archi3d batch create --run-id "test" --algos tripo3d_v2p5 --dry-run
 - Filters apply to product_id, variant, and product_name fields only
 - Job identity is stable but not backward-compatible with pre-Phase 2 job IDs
 
-**Next Phase**: Phase 3 (worker execution and status updates, to be implemented based on future plans)
+### Phase 3 — Run Worker ✅ COMPLETE
+
+**Objective**: Execute generation jobs from tables/generations.csv with robust lifecycle management, resumability, and concurrent execution support.
+
+**Implemented Components**:
+
+1. **Worker Execution Logic** (`src/archi3d/orchestrator/worker.py`):
+   - `run_worker(run_id, paths, ...)` — Main entry point for job execution
+   - `_execute_job(job_row, ...)` — Per-job execution with lifecycle management
+   - `_get_worker_identity()` — Captures worker environment metadata (host, user, GPU, env, commit)
+   - `_simulate_dry_run(...)` — Creates synthetic outputs for testing
+   - State marker management functions for resumability
+
+2. **Phase 3 Adapter Contract** (`src/archi3d/adapters/base.py`):
+   - `GenerationRequest` — Input dataclass for adapter execution (job_id, product_id, variant, algo, used_images, out_dir, workspace, extra)
+   - `GenerationResult` — Output dataclass from adapters (success, generated_glb, previews, algo_version, pricing, raw_metadata)
+   - Maintains backward compatibility with Phase 0-2 Token/ExecResult types
+
+3. **PathResolver Extensions** (`src/archi3d/config/paths.py`):
+   - `outputs_dir(run_id, job_id=...)` — Per-job output directories under `runs/<run_id>/outputs/<job_id>/`
+   - `state_dir(run_id)` — State marker directory for resumability
+   - `state_lock_path(run_id, job_id)` — Per-job FileLock paths for safe concurrent access
+
+4. **CLI Integration** (`src/archi3d/cli.py`):
+   - `archi3d run worker` command with Phase 3 flags:
+     - `--run-id` (required) — Run identifier
+     - `--jobs` (optional) — Filter job_id by substring
+     - `--only-status` (default: "enqueued") — Comma-separated statuses to process
+     - `--max-parallel` (default: 1) — Concurrent worker threads
+     - `--adapter` (optional) — Force specific adapter for debugging
+     - `--dry-run` — Simulate execution without calling adapters
+     - `--fail-fast` — Stop on first failure
+   - Rich console output with execution summary and file paths
+
+5. **Job Lifecycle State Machine**:
+   - **enqueued** → **running** → **completed** / **failed**
+   - State transitions protected by per-job FileLock
+   - State markers in `runs/<run_id>/state/`:
+     - `<job_id>.inprogress` — Job currently executing
+     - `<job_id>.completed` — Job finished successfully
+     - `<job_id>.failed` — Job failed
+     - `<job_id>.error.txt` — Full error details for failed jobs
+
+6. **SSOT Updates** (`tables/generations.csv`):
+   - **Phase 3 fields added**:
+     - **Execution metadata**: `status` (running/completed/failed), `generation_start`, `generation_end`, `generation_duration_s`
+     - **Worker identity**: `worker_host`, `worker_user`, `worker_gpu`, `worker_env`, `worker_commit`
+     - **Outputs**: `gen_object_path`, `preview_1_path`, `preview_2_path`, `preview_3_path`, `algo_version`
+     - **Costs**: `unit_price_usd`, `estimated_cost_usd`, `price_source`
+     - **Errors**: `error_msg` (truncated to 2000 chars)
+   - All paths are workspace-relative (POSIX format with forward slashes)
+   - Atomic upserts via Phase 0 `update_csv_atomic()` with (run_id, job_id) keys
+
+7. **Output Artifacts**:
+   - Per-job outputs under `runs/<run_id>/outputs/<job_id>/`:
+     - `generated.glb` — Generated 3D model (or adapter-specific name)
+     - `preview_1.png`, `preview_2.png`, `preview_3.png` — Optional preview images
+     - `metadata.json` — Adapter raw metadata (if provided)
+
+8. **Structured Logging** (`logs/worker.log`):
+   - JSON-formatted log entries with ISO8601 timestamps
+   - Event types:
+     - `worker_started` — Execution start with filters and config
+     - `job_completed` — Per-job success with duration
+     - `job_failed` — Per-job failure with error summary
+     - `job_crashed` — Unexpected worker crashes
+     - `worker_summary` — Final counts (processed, completed, failed, skipped, avg_duration_s)
+
+9. **Concurrency Support (Rearchitected)**:
+   - **Batch Upsert Model**: The core change is the move away from concurrent per-job CSV writes.
+   - **Thread Safety**: A thread pool (`--max-parallel`) is still used for execution. State markers (`<job_id>.inprogress`) prevent multiple workers from picking up the same job.
+   - **Race Condition Eliminated**: Since only one process writes the final batch of results to `generations.csv` (protected by `FileLock`), the risk of `NaN` corruption from concurrent pandas merges is completely eliminated.
+   - **Resumability**: State markers (`.completed`, `.failed`) ensure that re-running a worker safely skips already-processed jobs.
+
+10. **Dry-Run Mode**:
+    - Simulates execution without calling adapters
+    - Creates placeholder `generated.glb` and `preview_*.png` files
+    - Updates CSV with `algo_version="dry-run"`
+    - Useful for testing workflow and timing
+
+11. **Test Suite** (`tests/test_phase3_run_worker.py`):
+    - **7/7 tests passing (ALL FIXED)**.
+    - Tests were updated to validate the new batch upsert logic and to account for timing changes. The suite now fully covers:
+        - Dry-run success with synthetic outputs.
+        - Real run with failure validation.
+        - Resumability (completed jobs skipped on re-run).
+        - Concurrency with thread pools.
+        - Path relativity and idempotency.
+        - Job filtering by substring.
+        - Fail-fast mode.
+
+**Key Features**:
+- **Resumable execution**: State markers prevent duplicate work after interruption
+- **Concurrent execution**: Thread pool with configurable parallelism
+- **Worker observability**: Captures host, user, GPU, environment, commit for troubleshooting
+- **Atomic updates**: Safe concurrent access to SSOT via FileLock and atomic I/O
+- **Flexible filtering**: Process specific jobs by status, job_id pattern, or adapter
+- **Dry-run testing**: Validate workflow without external API calls
+- **Cost tracking**: Reads unit prices from adapters.yaml and tracks estimated costs
+- **Error handling**: Full error details in error.txt, truncated summary in CSV
+
+**CLI Examples**:
+```bash
+# Basic usage (process enqueued jobs with default parallelism)
+archi3d run worker --run-id "2025-10-20-experiment"
+
+# Dry-run mode (test without calling adapters)
+archi3d run worker --run-id "test-run" --dry-run
+
+# Concurrent execution with 4 workers
+archi3d run worker --run-id "prod-run" --max-parallel 4
+
+# Resume stuck "running" jobs
+archi3d run worker --run-id "interrupted-run" --only-status running
+
+# Process specific jobs by substring
+archi3d run worker --run-id "test-run" --jobs "59ad"
+
+# Force specific adapter (debug mode)
+archi3d run worker --run-id "test-run" --adapter test_algo_1
+
+# Stop on first failure
+archi3d run worker --run-id "test-run" --fail-fast
+```
+
+**Design Patterns**:
+- **State Machine**: Clear job lifecycle with atomic transitions
+- **State Markers**: Resume-friendly design with filesystem-based state tracking
+- **Worker Identity**: Full observability for debugging distributed execution
+- **Fail-Safe Defaults**: Conservative settings (serial execution, process enqueued only)
+- **Extensible Filtering**: Substring matching on job_id, status filtering, adapter override
+- **Cost Awareness**: Automatic cost tracking from configuration
+
+**Non-Functional Changes**:
+- Completely replaced old token-based worker logic
+- No changes to Phase 0, 1, or 2 functionality
+- All writes use Phase 0 atomic I/O utilities
+- Linting/formatting applied (ruff, black)
+
+**Known Constraints**:
+- Real adapter execution not implemented (placeholder creates minimal GLB).
+- Heartbeat mechanism for stale detection implemented but not actively updated.
+- Thread-based concurrency (process-based left as TODO).
+- No timeout mechanism for adapter execution (left as TODO).
+- Job filtering uses simple substring matching (not regex/glob).
+
+**Next Phase**: Phase 4+ (metrics computation, FScore/VFScore integration)
