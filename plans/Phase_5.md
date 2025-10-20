@@ -287,15 +287,19 @@ By completing Phase 5 as above, we extend the **single source of truth** (`table
 
 **After completing this phase, you MUST update the project documentation:**
 
-1. Update `CLAUDE.md` with:
+1. Update `claude.md` (the agent's memory file) with:
    - New functionality added in this phase
    - Usage examples and patterns
    - Any new constraints or design patterns
    - Update the "Implementation Status" section with phase completion details
 
-2. Keep documentation comprehensive and consolidated (avoid creating many small files)
+2. Update `readme.md` (the project's main documentation) with:
+   - A summary of the new features.
+   - Any changes to the project's usage or setup.
 
-3. The user prefers documentation that retains all information in a few comprehensive files
+3. Keep documentation comprehensive and consolidated (avoid creating many small files)
+
+4. The user prefers documentation that retains all information in a few comprehensive files
 
 **This is a critical step - do not consider the phase complete until documentation is updated!**
 
