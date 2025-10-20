@@ -33,12 +33,14 @@ app = typer.Typer(add_completion=False, help="Archi3D CLI")
 catalog_app = typer.Typer(help="Catalog and data operations")
 batch_app = typer.Typer(help="Batch orchestration")
 run_app = typer.Typer(help="Run workers")
+compute_app = typer.Typer(help="Compute metrics")
 metrics_app = typer.Typer(help="Metrics computation")
 report_app = typer.Typer(help="Reporting")
 
 app.add_typer(catalog_app, name="catalog")
 app.add_typer(batch_app, name="batch")
 app.add_typer(run_app, name="run")
+app.add_typer(compute_app, name="compute")
 app.add_typer(metrics_app, name="metrics")
 app.add_typer(report_app, name="report")
 
@@ -616,6 +618,121 @@ def consolidate_cmd(
         console.print(hist_table)
 
     console.print(f"\n  Generations CSV: {paths.generations_csv_path()}")
+    console.print(f"  Metrics log: {paths.metrics_log_path()}")
+
+
+# ---------------------------
+# compute fscore (Phase 5)
+# ---------------------------
+
+
+@compute_app.command("fscore")
+def compute_fscore_cmd(
+    run_id: str = typer.Option(..., "--run-id", help="Run identifier (required)"),
+    jobs: str | None = typer.Option(None, "--jobs", help="Filter job_id by glob/regex/substring"),
+    only_status: str = typer.Option(
+        "completed",
+        "--only-status",
+        help="Comma-separated statuses to process (default: completed)",
+    ),
+    with_gt_only: bool = typer.Option(
+        True, "--with-gt-only", help="Require non-empty GT object path (default: true)"
+    ),
+    redo: bool = typer.Option(
+        False, "--redo", help="Recompute even if metrics already present (default: false)"
+    ),
+    n_points: int = typer.Option(
+        100000, "--n-points", help="Poisson disk samples per mesh (default: 100000)"
+    ),
+    timeout_s: int | None = typer.Option(
+        None, "--timeout-s", help="Per-job timeout in seconds (optional)"
+    ),
+    max_parallel: int = typer.Option(
+        1, "--max-parallel", help="Maximum parallel jobs (default: 1)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview selection without running evaluator (default: false)"
+    ),
+):
+    """
+    Compute FScore (geometry metrics) for eligible jobs in a run.
+
+    Phase 5: Computes F-score, precision, recall, Chamfer-L2, and alignment
+    transforms for completed jobs with GT objects. Upserts results to
+    tables/generations.csv and persists per-job artifacts.
+    """
+    _, paths = _load_runtime()
+
+    try:
+        from archi3d.metrics.fscore import compute_fscore
+    except Exception as e:  # noqa: BLE001
+        _fail(f"Missing module archi3d.metrics.fscore (compute_fscore). Import error: {e!r}")
+
+    # Display execution info
+    panel_text = (
+        f"[bold]Compute FScore (Phase 5)[/bold]\n"
+        f"Run: {run_id}\n"
+        f"Jobs filter: {jobs or '—'}\n"
+        f"Only status: {only_status}\n"
+        f"With GT only: {with_gt_only}\n"
+        f"Redo: {redo}\n"
+        f"N-points: {n_points}\n"
+        f"Timeout: {timeout_s or '—'}s\n"
+        f"Max parallel: {max_parallel}\n"
+        f"Dry-run: {dry_run}"
+    )
+    console.print(Panel.fit(panel_text))
+
+    try:
+        summary = compute_fscore(
+            run_id=run_id,
+            jobs=jobs,
+            only_status=only_status,
+            with_gt_only=with_gt_only,
+            redo=redo,
+            n_points=n_points,
+            timeout_s=timeout_s,
+            max_parallel=max_parallel,
+            dry_run=dry_run,
+        )
+    except Exception as e:  # noqa: BLE001
+        import traceback
+
+        _fail(f"FScore computation failed: {e}\n{traceback.format_exc()}")
+
+    # Display summary
+    if dry_run:
+        console.print("\n[yellow]Dry-run complete (no evaluator calls)[/yellow]")
+    else:
+        console.print("\n[green]FScore computation complete![/green]")
+
+    summary_table = Table(title="FScore Computation Summary")
+    summary_table.add_column("Metric", justify="left", style="cyan")
+    summary_table.add_column("Count", justify="right", style="magenta")
+
+    summary_table.add_row("Selected", str(summary.get("n_selected", 0)))
+    summary_table.add_row("Processed", str(summary.get("processed", 0)))
+    summary_table.add_row("[green]OK[/green]", str(summary.get("ok", 0)))
+    summary_table.add_row("[red]Error[/red]", str(summary.get("error", 0)))
+    summary_table.add_row("[yellow]Skipped[/yellow]", str(summary.get("skipped", 0)))
+
+    if summary.get("avg_runtime_s"):
+        summary_table.add_row("Avg runtime", f"{summary['avg_runtime_s']:.2f}s")
+
+    console.print(summary_table)
+
+    # Show skip reasons if any
+    skip_reasons = summary.get("skip_reasons", {})
+    if skip_reasons:
+        reasons_table = Table(title="Skip Reasons")
+        reasons_table.add_column("Reason", justify="left")
+        reasons_table.add_column("Count", justify="right")
+        for reason, count in skip_reasons.items():
+            reasons_table.add_row(reason, str(count))
+        console.print(reasons_table)
+
+    console.print(f"\n  Generations CSV: {paths.generations_csv_path()}")
+    console.print(f"  Metrics artifacts: {paths.runs_root / run_id / 'metrics' / 'fscore'}")
     console.print(f"  Metrics log: {paths.metrics_log_path()}")
 
 

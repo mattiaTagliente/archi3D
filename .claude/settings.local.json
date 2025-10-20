@@ -23,7 +23,10 @@
       "Bash(black src/archi3d/orchestrator/consolidate.py src/archi3d/cli.py tests/test_phase4_consolidate.py)",
       "Bash(mypy src/archi3d/orchestrator/consolidate.py)",
       "Bash(pytest tests/test_phase4_consolidate.py -v --tb=short)",
-      "Bash(git add src/archi3d/orchestrator/consolidate.py tests/test_phase4_consolidate.py src/archi3d/cli.py CLAUDE.md readme.md .claude/settings.local.json)"
+      "Bash(git add src/archi3d/orchestrator/consolidate.py tests/test_phase4_consolidate.py src/archi3d/cli.py CLAUDE.md readme.md .claude/settings.local.json)",
+      "Bash(ruff check:*)",
+      "Bash(black:*)",
+      "Bash(python -m pytest:*)"
     ],
     "deny": [],
     "ask": []

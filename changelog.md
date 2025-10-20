@@ -491,4 +491,183 @@ archi3d consolidate --run-id "large-run" --max-rows 100
 - Stale heartbeat behavior: keeps `running` status (documented as "leave as is")
 - Status filtering uses simple string matching (not regex/glob)
 
-**Next Phase**: Phase 5+ (metrics computation with FScore/VFScore integration)
+**Next Phase**: Phase 5 (FScore geometry metrics computation)
+
+### Phase 5 — Compute FScore (Geometry Metrics) ✅ COMPLETE
+
+**Objective**: Compute geometry-based quality metrics (F-score, precision, recall, Chamfer-L2, alignment transforms) for completed jobs with ground truth objects, and upsert standardized metric columns into the SSOT `tables/generations.csv`.
+
+**Implemented Components**:
+
+1. **FScore Adapter Layer** (`src/archi3d/metrics/fscore_adapter.py`):
+   - `FScoreRequest` — Input dataclass for FScore evaluation (gt_path, cand_path, n_points, out_dir, timeout_s)
+   - `FScoreResponse` — Output dataclass with normalized results (ok, payload, tool_version, config_hash, runtime_s, error)
+   - `evaluate_fscore(req)` — Main entry point with dual resolution:
+     1. Tries Python import API (`from fscore.evaluator import evaluate_one`)
+     2. Falls back to CLI invocation (`python -m fscore ...`)
+   - `_normalize_payload(raw)` — Normalizes tool output into canonical schema
+   - `_try_import_api(req)` — Attempts Python API with exception handling
+   - `_try_cli_invocation(req)` — Subprocess fallback with timeout and JSON parsing
+
+2. **Main Computation Logic** (`src/archi3d/metrics/fscore.py`):
+   - `compute_fscore(run_id, jobs, only_status, ...)` — Main entry point for metrics computation
+   - `_is_eligible(row, run_id, only_status, with_gt_only, redo, jobs_filter, paths)` — Eligibility filtering with skip reasons
+   - `_job_matches_filter(job_id, filter_pattern)` — Job ID filtering (substring/glob/regex)
+   - `_process_job(row, n_points, timeout_s, paths, dry_run)` — Per-job execution and artifact creation
+   - Thread pool support with `ThreadPoolExecutor` for parallel execution
+   - Atomic CSV upserts via Phase 0 `update_csv_atomic()` with (run_id, job_id) keys
+   - Structured logging to `logs/metrics.log` with event summaries
+
+3. **CLI Integration** (`src/archi3d/cli.py`):
+   - Added `compute_app` Typer group for metrics computation commands
+   - `archi3d compute fscore` command with Phase 5 flags:
+     - `--run-id` (required) — Run identifier
+     - `--jobs` (optional) — Job ID filter (glob/regex/substring)
+     - `--only-status` (default: "completed") — Comma-separated statuses to process
+     - `--with-gt-only` (default: True) — Require non-empty GT object path
+     - `--redo` (default: False) — Force recomputation even if metrics already present
+     - `--n-points` (default: 100000) — Poisson disk samples per mesh
+     - `--timeout-s` (optional) — Per-job timeout in seconds
+     - `--max-parallel` (default: 1) — Maximum concurrent workers
+     - `--dry-run` (default: False) — Preview selection without running evaluator
+   - Rich console output with summary tables and skip reasons histogram
+
+4. **SSOT Schema Extensions** (`tables/generations.csv` — 24 new columns):
+   - **Core metrics**: `fscore` (float), `precision` (float), `recall` (float), `chamfer_l2` (float)
+   - **Alignment**: `fscore_scale` (float), `fscore_rot_w/x/y/z` (float), `fscore_tx/y/z` (float)
+   - **Distance statistics**: `fscore_dist_mean/median/p95/p99/max` (float)
+   - **Metadata**: `fscore_n_points` (int), `fscore_runtime_s` (float), `fscore_tool_version` (str), `fscore_config_hash` (str)
+   - **Status tracking**: `fscore_status` (enum: ok/error/skipped), `fscore_error` (str, truncated to 2000 chars)
+   - All numeric fields are nullable (None/NaN for missing data)
+   - Upserted atomically via Phase 0 utilities
+
+5. **Per-Job Artifacts**:
+   - Output directory: `runs/<run_id>/metrics/fscore/<job_id>/`
+   - `result.json` — Canonical machine-readable payload with all metrics
+   - Directory created automatically before writing (handles concurrent access)
+   - Idempotent: not overwritten unless `--redo` is set
+
+6. **Canonical Payload Schema** (JSON):
+   ```json
+   {
+     "fscore": <float>, "precision": <float>, "recall": <float>,
+     "chamfer_l2": <float>, "n_points": <int>,
+     "alignment": {
+       "scale": <float>,
+       "rotation_quat": {"w": <float>, "x": <float>, "y": <float>, "z": <float>},
+       "translation": {"x": <float>, "y": <float>, "z": <float>}
+     },
+     "dist_stats": {
+       "mean": <float>, "median": <float>, "p95": <float>, "p99": <float>, "max": <float>
+     },
+     "mesh_meta": {
+       "gt_vertices": <int>, "gt_triangles": <int>,
+       "pred_vertices": <int>, "pred_triangles": <int>
+     }
+   }
+   ```
+
+7. **Eligibility Rules**:
+   - `run_id` must match target run
+   - `status` must be in `--only-status` list (default: `completed`)
+   - `gen_object_path` must exist on disk
+   - `gt_object_path` must exist on disk if `--with-gt-only` (default: True)
+   - Job ID must match `--jobs` filter (if provided)
+   - Skip if `fscore_status="ok"` unless `--redo` is set
+   - Emits structured skip reasons: `wrong_run_id`, `status_not_in_filter`, `job_id_not_matching_filter`, `already_computed`, `missing_gen_object_path`, `missing_gt_object_path`, `gen_object_not_found_on_disk`, `gt_object_not_found_on_disk`
+
+8. **Structured Logging** (`logs/metrics.log`):
+   - JSON-formatted event summary:
+     ```json
+     {
+       "event": "compute_fscore",
+       "timestamp": "...",
+       "run_id": "...",
+       "n_selected": <int>,
+       "processed": <int>,
+       "ok": <int>,
+       "error": <int>,
+       "skipped": <int>,
+       "avg_runtime_s": <float>,
+       "n_points": <int>,
+       "redo": <bool>,
+       "max_parallel": <int>,
+       "dry_run": <bool>,
+       "skip_reasons": {...}
+     }
+     ```
+
+9. **Test Suite** (`tests/test_phase5_compute_fscore.py`):
+   - 9 comprehensive tests covering all requirements:
+     1. Happy path dry-run (selection without evaluator calls)
+     2. Happy path real computation (full workflow with mock adapter)
+     3. Missing GT object (proper error handling)
+     4. Idempotency without redo (skips already computed jobs)
+     5. Redo mode (force recomputation)
+     6. Concurrency multiple jobs (parallel processing with ThreadPoolExecutor)
+     7. Timeout handling (evaluator timeout → error status)
+     8. Job filter matching (substring/glob/regex filtering)
+     9. Status filtering (process only specified statuses)
+   - All 9 tests passing
+   - Full test suite: 59/59 tests passing (21+8+7+7+7+9 across Phases 0-5)
+
+**Key Features**:
+- **Dual Adapter Integration**: Tries Python import API first, falls back to CLI invocation
+- **Idempotent by Default**: Skips jobs with `fscore_status="ok"` unless `--redo` is set
+- **Atomic CSV Updates**: Uses Phase 0 `update_csv_atomic()` with FileLock for concurrent safety
+- **Parallel Execution**: ThreadPoolExecutor with configurable `--max-parallel` flag
+- **Flexible Filtering**: Job ID patterns (substring/glob/regex), status lists, GT requirement
+- **Timeout Support**: Per-job timeout with `--timeout-s` flag (useful for large meshes)
+- **Dry-Run Mode**: Preview eligible jobs without evaluator calls
+- **Comprehensive Metrics**: 24 new columns covering geometry similarity, alignment, and distance statistics
+- **Structured Logging**: JSON event summaries to `logs/metrics.log` with counters and skip reasons
+- **Graceful Error Handling**: Invalid inputs → `fscore_status="error"` with descriptive `fscore_error`
+
+**CLI Examples**:
+```bash
+# Basic usage (process completed jobs with GT objects)
+archi3d compute fscore --run-id "2025-10-20-experiment"
+
+# Dry-run to preview selection
+archi3d compute fscore --run-id "test-run" --dry-run
+
+# Parallel execution with 4 workers
+archi3d compute fscore --run-id "prod-run" --max-parallel 4
+
+# Recompute specific jobs matching a pattern
+archi3d compute fscore --run-id "test-run" --jobs "product_123*" --redo
+
+# Custom sampling density and timeout
+archi3d compute fscore --run-id "large-meshes" --n-points 200000 --timeout-s 300
+
+# Process failed jobs (for diagnostics)
+archi3d compute fscore --run-id "test-run" --only-status "failed" --with-gt-only=false
+```
+
+**Design Patterns**:
+- **Adapter Abstraction**: Clean separation between orchestration and tool integration
+- **Evidence-Based Eligibility**: Multi-criteria filtering with structured skip reasons
+- **Job ID Filtering**: Supports substring, glob (`*` wildcard), and regex (`re:` prefix) patterns
+- **Canonical Payload Schema**: Normalized JSON schema for cross-tool compatibility
+- **Workspace-Relative Paths**: All artifact paths use POSIX format relative to workspace
+- **Directory Auto-Creation**: Output directories created automatically before writes
+- **Error Truncation**: Error messages capped at 2000 chars with full details in result.json
+
+**Non-Functional Changes**:
+- No changes to Phases 0-4 functionality
+- All writes use Phase 0 atomic I/O utilities
+- Linting/formatting applied (ruff, black)
+- Type checking passed (mypy with pandas stub warnings)
+- Added `compute_app` Typer group to CLI (new subcommand namespace)
+
+**Known Constraints**:
+- FScore tool must be available via Python import or CLI (`python -m fscore`)
+- Payload normalization assumes specific JSON schema from FScore tool
+- Job ID filtering uses simple patterns (substring, glob with `*`, or regex with `re:` prefix)
+- Status filtering uses simple string matching (not regex/glob)
+- Distance statistics fields are optional (may be None if tool doesn't provide)
+- Mesh metadata fields are optional (may be None if tool doesn't provide)
+- Error message truncation: 2000 characters (full error in result.json)
+- Concurrency is thread-based (not process-based)
+
+**Next Phase**: Phase 6+ (VFScore visual similarity metrics, final reporting)

@@ -9,14 +9,15 @@ This project provides a robust framework for benchmarking state-of-the-art Image
 1.  **Cataloging** a dataset of product images and ground truth models.
 2.  **Creating** batches of jobs based on specific algorithms and image selection policies.
 3.  **Executing** these jobs concurrently, preventing data corruption and conflicts.
-4.  **Consolidating** distributed results into a master dataset.
-5.  **Generating** reports for analysis.
+4.  **Consolidating** distributed results into a master dataset, ensuring SSOT consistency.
+5.  **Computing metrics** including geometry-based quality metrics (FScore) for evaluation.
+6.  **Generating** reports for analysis.
 
 The entire system is built to work seamlessly over a shared network drive (like OneDrive or Google Drive), making collaboration easy and reliable.
 
 ## ✨ Core Features
 
-  * **Typer-based CLI**: A clean, modern command-line interface with commands for each step of the workflow: `catalog`, `batch`, `run`, `metrics`, and `report`.
+  * **Typer-based CLI**: A clean, modern command-line interface with commands for each step of the workflow: `catalog`, `batch`, `run`, `consolidate`, `compute`, `metrics`, and `report`.
   * **Layered Configuration**: A flexible configuration system that merges settings from a global `global.yaml`, a per-user `~/.archi3d/config.yaml`, and environment variables.
   * **Idempotent Job Creation**: The system intelligently skips jobs that have already been queued or completed, preventing redundant work and wasted resources.
   * **Conflict-Free Concurrent Execution**: Designed for multi-user safety. Workers write results to a staging area in unique, isolated files. This avoids the race conditions and file corruption common with cloud-sync services, allowing dozens of developers to run workers simultaneously without interfering with each other.
@@ -279,15 +280,63 @@ archi3d catalog consolidate
 
 This gathers individual result files from the staging area into the main `tables/results.parquet` file (legacy behavior from Phases 0-2).
 
-**5. Compute Metrics**
+**5. Compute FScore (Geometry Metrics) — Phase 5**
 
-After consolidating, run this command to generate placeholder metric files for each new output.
+After consolidation, compute geometry-based quality metrics (F-score, precision, recall, Chamfer-L2, alignment transforms) for completed jobs with ground truth objects. This command evaluates geometric similarity between generated 3D models and their ground truth counterparts.
 
+```bash
+archi3d compute fscore --run-id "initial-test-run"
 ```
+
+**Key Features:**
+- Automatically selects eligible jobs (`status=completed`, GT object present)
+- Computes per-job metrics using the FScore evaluator (Python API or CLI fallback)
+- Upserts 24 metric columns to `tables/generations.csv` (SSOT)
+- Persists detailed results to `runs/<run_id>/metrics/fscore/<job_id>/result.json`
+- Idempotent by default: skips jobs already computed (use `--redo` to force recomputation)
+- Supports parallel execution with `--max-parallel` flag
+- Structured logging to `logs/metrics.log`
+
+**Common Options:**
+
+```bash
+# Dry-run to preview selection
+archi3d compute fscore --run-id "initial-test-run" --dry-run
+
+# Compute with parallel execution
+archi3d compute fscore --run-id "initial-test-run" --max-parallel 4
+
+# Recompute specific jobs matching a pattern
+archi3d compute fscore --run-id "initial-test-run" --jobs "product_123*" --redo
+
+# Process only completed jobs with custom sampling
+archi3d compute fscore --run-id "initial-test-run" --only-status "completed" --n-points 200000
+
+# Set per-job timeout (useful for large meshes)
+archi3d compute fscore --run-id "initial-test-run" --timeout-s 300
+```
+
+**Computed Metrics:**
+- **Core**: `fscore`, `precision`, `recall`, `chamfer_l2`
+- **Alignment**: `fscore_scale`, rotation quaternion (`fscore_rot_w/x/y/z`), translation (`fscore_tx/y/z`)
+- **Distance Statistics**: `fscore_dist_mean/median/p95/p99/max`
+- **Metadata**: `fscore_n_points`, `fscore_runtime_s`, `fscore_tool_version`, `fscore_config_hash`
+- **Status**: `fscore_status` (ok/error/skipped), `fscore_error` (truncated to 2000 chars)
+
+**Output Artifacts:**
+- Updated CSV: `tables/generations.csv` with FScore columns
+- Per-job details: `runs/<run_id>/metrics/fscore/<job_id>/result.json`
+- Structured log: `logs/metrics.log` with event summary
+
+**6. Compute Additional Metrics (Legacy)**
+
+After FScore computation, you can run the legacy placeholder metrics command if needed:
+
+```bash
 archi3d metrics compute --run-id "initial-test-run"
 ```
 
-**6. Build the Report**
+**7. Build the Report**
 
 Finally, consolidate all the results from the run into a set of summary reports (`overview.yaml`, `by_algo.csv`, etc.) in the `workspace/reports/initial-test-run/` directory.
 

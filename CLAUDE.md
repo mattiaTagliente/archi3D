@@ -50,6 +50,10 @@ pytest --cov=src/archi3d
 **Test Suite Status**:
 - Phase 0 tests: ✅ Complete (21 tests covering PathResolver and atomic I/O utilities)
 - Phase 1 tests: ✅ Complete (8 tests covering catalog build functionality)
+- Phase 2 tests: ✅ Complete (7 tests covering batch creation and job queue)
+- Phase 3 tests: ✅ Complete (7 tests covering worker execution and lifecycle)
+- Phase 4 tests: ✅ Complete (7 tests covering SSOT consolidation and reconciliation)
+- Phase 5 tests: ✅ Complete (9 tests covering FScore computation and metrics upsert)
 
 ### Dependency Management
 ```bash
@@ -63,15 +67,17 @@ pip-compile --upgrade pyproject.toml -o requirements.lock.txt
 ### Running the CLI
 ```bash
 # Basic workflow (from project root)
-archi3d catalog build                              # Scan dataset, build items.csv
-archi3d batch create --run-id "test-run"          # Create job queue
-archi3d run worker --run-id "test-run" --algo "tripo3d_v2p5_multi" --limit 5
-archi3d catalog consolidate                        # Merge results from staging
-archi3d metrics compute --run-id "test-run"       # Compute metrics
-archi3d report build --run-id "test-run"          # Generate reports
+archi3d catalog build                                    # Scan dataset, build items.csv
+archi3d batch create --run-id "test-run"                 # Create job queue
+archi3d run worker --run-id "test-run" --adapter "..." --max-parallel 2
+archi3d consolidate --run-id "test-run"                  # Reconcile SSOT with disk state
+archi3d compute fscore --run-id "test-run"               # Compute geometry metrics
+archi3d metrics compute --run-id "test-run"              # Compute additional metrics
+archi3d report build --run-id "test-run"                 # Generate reports
 
 # Debug mode
-archi3d run worker --run-id "test-run" --algo "..." --limit 1 --dry-run
+archi3d run worker --run-id "test-run" --adapter "..." --limit 1 --dry-run
+archi3d compute fscore --run-id "test-run" --dry-run     # Preview FScore computation
 ```
 
 ## Architecture
@@ -198,8 +204,12 @@ src/archi3d/
 │   └── catalog.py      # Old dataset scanning (superseded by db.catalog)
 ├── orchestrator/       # Core batch/worker logic
 │   ├── batch.py        # Job queue creation, image selection policies
-│   └── worker.py       # Token claiming, adapter execution, retries
-├── metrics/            # Metrics computation (placeholder stubs)
+│   ├── worker.py       # Token claiming, adapter execution, retries
+│   └── consolidate.py  # SSOT reconciliation with disk artifacts (Phase 4)
+├── metrics/            # Metrics computation
+│   ├── fscore.py       # FScore (geometry metrics) computation (Phase 5)
+│   ├── fscore_adapter.py  # FScore tool integration layer
+│   └── compute.py      # Legacy metrics computation (placeholder)
 ├── reporting/          # Report generation (CSV/YAML summaries)
 ├── utils/              # Shared utilities
 │   ├── io.py           # Atomic I/O: write_text_atomic, append_log_record, update_csv_atomic
@@ -207,8 +217,12 @@ src/archi3d/
 └── cli.py              # Typer CLI app (5 subcommands: catalog/batch/run/metrics/report)
 
 tests/
-├── test_phase0_paths_and_io.py     # Phase 0: PathResolver and atomic I/O tests (21 tests)
-└── test_phase1_catalog_build.py    # Phase 1: Catalog build functionality tests (8 tests)
+├── test_phase0_paths_and_io.py        # Phase 0: PathResolver and atomic I/O tests (21 tests)
+├── test_phase1_catalog_build.py       # Phase 1: Catalog build functionality tests (8 tests)
+├── test_phase2_batch_create.py        # Phase 2: Batch creation tests (7 tests)
+├── test_phase3_run_worker.py          # Phase 3: Worker execution tests (7 tests)
+├── test_phase4_consolidate.py         # Phase 4: SSOT consolidation tests (7 tests)
+└── test_phase5_compute_fscore.py      # Phase 5: FScore computation tests (9 tests)
 ```
 
 ## Key Design Patterns
@@ -248,6 +262,61 @@ Workers validate token authenticity by recomputing `job_id` from token contents 
 - **Transient errors** (rate limits, timeouts): Raise `AdapterTransientError` → worker retries 3 times
 - **Permanent errors** (invalid input, API rejection): Raise `AdapterPermanentError` → worker fails immediately
 - Always log to `adapter.logger` (instance-specific logger in `base.py`)
+
+### FScore Metrics Computation (Phase 5)
+Phase 5 implements geometry-based quality metrics via the `archi3d compute fscore` command:
+
+**Key Components**:
+1. **FScore Adapter Layer** (`metrics/fscore_adapter.py`):
+   - Isolates external FScore tool integration
+   - Resolution order: Python import API → CLI invocation fallback
+   - Normalizes output into canonical payload schema (fscore, precision, recall, chamfer_l2, alignment, dist_stats, mesh_meta)
+   - Returns `FScoreResponse` with success/error status
+
+2. **Main Computation Logic** (`metrics/fscore.py`):
+   - Job eligibility filtering (status, GT presence, existing metrics)
+   - Job ID filtering (substring/glob/regex patterns)
+   - Parallel execution with ThreadPoolExecutor
+   - Per-job result artifacts: `runs/<run_id>/metrics/fscore/<job_id>/result.json`
+   - Atomic CSV upserts to `tables/generations.csv` with 24 new FScore columns
+   - Structured logging to `logs/metrics.log`
+
+**FScore Columns in SSOT** (Phase 5):
+- Core metrics: `fscore`, `precision`, `recall`, `chamfer_l2`
+- Alignment: `fscore_scale`, `fscore_rot_{w,x,y,z}`, `fscore_t{x,y,z}`
+- Distance stats: `fscore_dist_{mean,median,p95,p99,max}`
+- Metadata: `fscore_n_points`, `fscore_runtime_s`, `fscore_tool_version`, `fscore_config_hash`
+- Status: `fscore_status` (ok/error/skipped), `fscore_error`
+
+**CLI Flags**:
+- `--run-id`: Required, target run to process
+- `--jobs`: Optional job ID filter (glob/regex/substring)
+- `--only-status`: Comma-separated status filter (default: `completed`)
+- `--with-gt-only`: Require GT object path (default: `true`)
+- `--redo`: Force recomputation of existing metrics (default: `false`)
+- `--n-points`: Poisson disk samples per mesh (default: `100000`)
+- `--timeout-s`: Per-job timeout in seconds (optional)
+- `--max-parallel`: Thread pool size (default: `1`)
+- `--dry-run`: Preview selection without evaluator calls
+
+**Idempotency & Safety**:
+- Without `--redo`, skips jobs with `fscore_status="ok"` (prevents redundant computation)
+- Uses Phase 0 atomic I/O (`update_csv_atomic`) with FileLock for safe concurrent access
+- Creates output directories automatically before writing artifacts
+- Graceful error handling: invalid inputs → `fscore_status="error"` with descriptive `fscore_error`
+
+**Typical Workflow**:
+```bash
+# After worker completion
+archi3d consolidate --run-id "2025-10-20-exp"       # Ensure SSOT is consistent
+archi3d compute fscore --run-id "2025-10-20-exp"    # Compute geometry metrics
+
+# Recompute specific failed jobs
+archi3d compute fscore --run-id "2025-10-20-exp" --redo --only-status "failed"
+
+# Preview before running
+archi3d compute fscore --run-id "2025-10-20-exp" --dry-run
+```
 
 ## Important Constraints
 
