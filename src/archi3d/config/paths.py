@@ -51,6 +51,10 @@ class PathResolver:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
+    def run_root(self, run_id: str) -> Path:
+        """Alias for run_dir (consistent with Phase 2 naming)."""
+        return self.run_dir(run_id)
+
     def run_config_path(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "config.yaml"
 

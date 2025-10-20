@@ -417,4 +417,112 @@ archi3d catalog build --dataset /path/to/dataset
 - Maximum 6 images per item (hard cap, excess images ignored)
 - JSON structure must match expected schema (ProductId, Manufacturer.Name, Name.Value.{it,en}, etc.)
 
-**Next Phase**: Phase 2 (to be implemented based on `.\plans\Phase_2.md`)
+### Phase 2 — Batch Create ✅ COMPLETE
+
+**Objective**: Implement `archi3d batch create` command to materialize per-run job lists, initialize the SSOT `tables/generations.csv` registry, and produce per-run manifests.
+
+**Implemented Components**:
+
+1. **Job Identity Helpers** (`src/archi3d/db/generations.py`):
+   - `compute_image_set_hash(image_paths)` — Deterministic SHA1 hash of ordered image paths
+   - `compute_job_id(product_id, variant, algo, image_set_hash)` — 12-char deterministic job ID
+   - `upsert_generations(generations_csv_path, df_new)` — Atomic upsert to generations.csv using (run_id, job_id) keys
+
+2. **Batch Creation Logic** (`src/archi3d/orchestrator/batch.py`):
+   - Completely refactored for Phase 2 requirements
+   - `create_batch(run_id, algos, paths, ...)` — Main entry point
+   - `_select_images_use_up_to_6(row)` — Image selection policy implementation
+   - `_apply_filters(items_df, ...)` — Filtering logic (include/exclude/with-gt-only/limit)
+   - Uses Phase 0 atomic I/O utilities for safe concurrent access
+
+3. **CLI Integration** (`src/archi3d/cli.py`):
+   - `archi3d batch create` command with Phase 2 flags:
+     - `--run-id` (optional, auto-generates UTC timestamp if omitted)
+     - `--algos` (comma-separated algorithm keys)
+     - `--image-policy` (default: "use_up_to_6")
+     - `--limit` (max items to process)
+     - `--include` / `--exclude` (substring filters on product_id/variant/product_name)
+     - `--with-gt-only` (skip items without GT)
+     - `--dry-run` (compute summary without writing files)
+   - Console output: Summary tables with candidates, enqueued, skipped counts
+   - Auto-selects default algorithm if none specified
+
+4. **SSOT Schema** (`tables/generations.csv`):
+   - **Columns** (30 total, in order per Phase 2 spec):
+     - **Carry-over from parent** (observability): `product_id`, `variant`, `manufacturer`, `product_name`, `category_l1`, `category_l2`, `category_l3`, `description`, `source_n_images`, `source_image_1_path` ... `source_image_6_path`, `gt_object_path`
+     - **Batch/job metadata**: `run_id`, `job_id`, `algo`, `algo_version`, `used_n_images`, `used_image_1_path` ... `used_image_6_path`, `image_set_hash`, `status`, `created_at`, `notes`
+   - **Key columns**: `(run_id, job_id)` uniquely identify each generation job
+   - **Upsert behavior**: Keeps existing rows on conflict (idempotent)
+   - **Encoding**: UTF-8-SIG for Excel compatibility
+   - **Status**: Phase 2 sets `status="enqueued"` for new jobs
+
+5. **Per-Run Manifest** (`runs/<run_id>/manifest.csv`):
+   - Derived from `generations.csv` for jobs with `status=enqueued` and matching `run_id`
+   - **Required columns**: `job_id`, `product_id`, `variant`, `algo`, `used_n_images`, `used_image_1_path` ... `used_image_6_path`, `image_set_hash`
+   - **Optional columns**: `gt_object_path`, `product_name`, `manufacturer`
+   - Provides per-run job list for worker execution
+
+6. **Structured Logging** (`logs/batch_create.log`):
+   - JSON-formatted log entries with ISO8601 timestamps
+   - Fields: `event`, `timestamp`, `run_id`, `algos`, `image_policy`, `candidates`, `enqueued`, `skipped`, `skip_reasons`, `dry_run`
+   - Skip reasons histogram: `no_images`, `filtered_include`, `filtered_exclude`, `with_gt_only`, `duplicate_job`
+
+7. **Test Suite** (`tests/test_phase2_batch_create.py`):
+   - 7 comprehensive tests covering:
+     - Dry-run mode (no files written, log with dry_run flag)
+     - Real write + idempotency (upsert prevents duplicates)
+     - Filters and with-gt-only (correct items skipped)
+     - Multi-algo job identity (distinct job_ids per algo, same image_set_hash)
+     - Path relativity (all paths workspace-relative)
+     - Job identity determinism (stable hashes and IDs)
+     - Limit parameter (caps items processed)
+   - All 7 tests passing
+
+**Key Features**:
+- **Deterministic job identity**: SHA1-based job IDs stable across re-runs with same inputs
+- **Atomic upserts**: Uses Phase 0 `update_csv_atomic()` with (run_id, job_id) keys
+- **Idempotency**: Re-running with same inputs updates existing rows, doesn't create duplicates
+- **Flexible filtering**: Include/exclude patterns, GT-only mode, item limit
+- **Dry-run mode**: Preview changes without writing files
+- **Auto-generated run IDs**: UTC timestamp slugs if not specified
+- **Workspace-relative paths**: All paths in CSVs are portable and cross-platform
+
+**CLI Examples**:
+```bash
+# Basic usage (auto-generates run_id, uses default algo)
+archi3d batch create
+
+# Explicit run_id and algorithms
+archi3d batch create --run-id "2025-10-20-experiment" --algos tripo3d_v2p5,trellis_single
+
+# With filters
+archi3d batch create --run-id "test-run" --algos tripo3d_v2p5 --with-gt-only --limit 10
+
+# Include/exclude patterns
+archi3d batch create --include "100001" --algos tripo3d_v2p5
+archi3d batch create --exclude "100003" --algos tripo3d_v2p5
+
+# Dry-run (preview only)
+archi3d batch create --run-id "test" --algos tripo3d_v2p5 --dry-run
+```
+
+**Design Patterns**:
+- **SSOT First**: `generations.csv` is the single source of truth; manifest is derived from it
+- **Image Selection Policy**: Extensible policy system (currently only `use_up_to_6`)
+- **Filtering Order**: include → exclude → with-gt-only → n_images ≥ 1 → limit
+- **Job Identity**: `job_id = SHA1(product_id|variant|algo|image_set_hash)[:12]`
+- **Image Set Hash**: `SHA1(\n.join(used_image_paths))` for deterministic ordering
+
+**Non-Functional Changes**:
+- Completely replaced old token-based batch creation logic
+- No changes to Phase 0 or Phase 1 functionality
+- All writes use Phase 0 atomic I/O utilities
+- Linting/formatting applied (ruff, black)
+
+**Known Constraints**:
+- Image policy currently limited to `use_up_to_6` (extensible for future policies)
+- Include/exclude filters use substring matching (case-insensitive), not regex or glob
+- Filters apply to product_id, variant, and product_name fields only
+- Job identity is stable but not backward-compatible with pre-Phase 2 job IDs
+
+**Next Phase**: Phase 3 (worker execution and status updates, to be implemented based on future plans)

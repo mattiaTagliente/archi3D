@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m pytest tests/test_phase1_catalog_build.py -v)"
+      "Bash(python -m pytest tests/test_phase1_catalog_build.py -v)",
+      "Bash(python -m pytest tests/test_phase2_batch_create.py -v)",
+      "Bash(python -m pytest tests/ -v)"
     ],
     "deny": [],
     "ask": []

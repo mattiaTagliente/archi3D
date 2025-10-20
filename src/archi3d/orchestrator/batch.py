@@ -1,360 +1,357 @@
-# archi3d/orchestrator/batch.py
+"""
+Batch creation orchestration for Phase 2.
+
+This module creates deterministic job registries in tables/generations.csv
+and per-run manifests in runs/<run_id>/manifest.csv.
+"""
+
 from __future__ import annotations
 
-import fnmatch
-import hashlib
-import json
-import os
 import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import pandas as pd
-import yaml
-from filelock import FileLock
-from platformdirs import user_config_path
 
-from archi3d import __version__
 from archi3d.config.paths import PathResolver
-from archi3d.utils.io import write_json, write_yaml
-from archi3d.utils.text import slugify
+from archi3d.db.generations import compute_image_set_hash, compute_job_id, upsert_generations
+from archi3d.utils.io import append_log_record
 
 
-# -------------------------------------------------
-# Repo config (global.yaml) — lightweight reader
-# -------------------------------------------------
+# -------------------------------
+# Image Selection Policy
+# -------------------------------
 
-def _candidate_global_yaml_paths() -> list[Path]:
-    """Ordered candidates for global.yaml across dev and frozen runtimes."""
-    cands: list[Path] = []
-    env_path = os.getenv("ARCHI3D_GLOBAL_YAML")
-    if env_path:
-        cands.append(Path(env_path))
-    cur = Path.cwd().resolve()
-    for _ in range(7):
-        cands.append(cur / "global.yaml")
-        if (cur / ".git").exists() or (cur / "pyproject.toml").exists():
-            break
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    here = Path(__file__).resolve()
-    cur = here
-    for _ in range(7):
-        if (cur / "pyproject.toml").exists():
-            cands.append(cur / "global.yaml")
-            break
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    cands.append(user_config_path("archi3d") / "global.yaml")
-    seen = set()
-    return [p for p in cands if p not in seen and not seen.add(p)]
-
-
-def _read_single_image_policy(default: str = "exact_one") -> str:
+def _select_images_use_up_to_6(row: pd.Series) -> tuple[list[str], str]:
     """
-    Resolve global.yaml and read 'batch.single_image_policy'.
-    Defaults to 'exact_one' if not found or invalid.
+    Apply 'use_up_to_6' image selection policy.
+
+    Uses the first n_images from items.csv (already ordered by Phase 1).
+    Phase 1 guarantees deterministic selection and max 6 images.
+
+    Args:
+        row: DataFrame row from items.csv with image_1_path...image_6_path columns.
+
+    Returns:
+        (selected_image_paths, skip_reason)
+        skip_reason is "no_images" if n_images < 1, else ""
     """
-    for p in _candidate_global_yaml_paths():
-        try:
-            if p.exists():
-                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-                policy = (data.get("batch", {}).get("single_image_policy") or "").strip()
-                if policy in {"allow_any", "exact_one"}:
-                    return policy
-        except Exception:
-            continue
-    return default
+    n_images = int(row.get("n_images", 0))
 
-
-# -------------------------------
-# Data Class
-# -------------------------------
-
-@dataclass(frozen=True)
-class ManifestRow:
-    product_id: str
-    algo: str
-    image_set_csv: str
-    img_suffixes: str
-    n_images: int
-    gt_fbx_relpath: str
-    job_id: str
-    reason: str  # empty if queued
-
-
-# -------------------------------
-# Image suffix extraction
-# -------------------------------
-_SUFFIX_RE = re.compile(r"_([A-Z])(?:\.[^.]+)$", re.IGNORECASE)
-
-
-def _img_suffixes_from_list(image_files: List[str], max_len: int = 20) -> str:
-    letters: List[str] = []
-    for s in image_files:
-        m = _SUFFIX_RE.search(Path(s).name)
-        if m:
-            letters.append(m.group(1).upper())
-    out = "-".join(letters) if letters else ""
-    return out[:max_len]
-
-
-# -------------------------------
-# Image selection policies
-# -------------------------------
-
-def _select_for_single(image_files: List[str], policy: str) -> Tuple[List[str], Optional[str]]:
-    """
-    Apply the single-image policy.
-      - 'exact_one': Only proceed if the item has exactly one image.
-      - 'allow_any': Pick one image (preferring *_A), even if more are available.
-    """
-    if not image_files:
+    if n_images < 1:
         return [], "no_images"
 
-    if policy == "exact_one":
-        if len(image_files) != 1:
-            return [], "policy_requires_exactly_1_image"
-        return [image_files[0]], None
+    # Collect non-empty image paths in order
+    selected = []
+    for i in range(1, 7):  # image_1_path through image_6_path
+        path = str(row.get(f"image_{i}_path", "")).strip()
+        if path:
+            selected.append(path)
 
-    a_matches = [p for p in image_files if re.search(r"_A\.(jpg|jpeg|png)$", p, re.IGNORECASE)]
-    if a_matches:
-        return [a_matches[0]], None
-    return [image_files[0]], None
+    # Should match n_images from Phase 1, but verify
+    if len(selected) != n_images:
+        # Log warning but continue with what we found
+        pass
 
-
-def _select_first_k(image_files: List[str], k: int, min_required: Optional[int] = None) -> Tuple[List[str], Optional[str]]:
-    min_required = min_required or k
-    if len(image_files) < min_required:
-        return [], f"insufficient_images(min={min_required})"
-    return image_files[:k], None
-
-
-def _select_min_n_all(image_files: List[str], n_min: int) -> Tuple[List[str], Optional[str]]:
-    if len(image_files) < n_min:
-        return [], f"insufficient_images(min={n_min})"
-    return list(image_files), None
-
-
-def _select_min_max(image_files: List[str], n_min: int, n_max: int) -> Tuple[List[str], Optional[str]]:
-    if len(image_files) < n_min:
-        return [], f"insufficient_images(min={n_min})"
-    return image_files[:n_max], None
-
-
-# Map algorithms to policies
-_POLICIES: Dict[str, Tuple[str, Dict]] = {
-    "trellis_multi_stochastic": ("min_all", {"n_min": 2}),
-    "trellis_multi_multidiffusion": ("min_all", {"n_min": 2}),
-    "rodin_multi": ("min_all", {"n_min": 2}),
-    "tripo3d_v2p5_multi": ("min_max", {"n_min": 2, "n_max": 4}),
-    "hunyuan3d_v2_multi": ("first_k", {"k": 3, "min_required": 3}),
-    "trellis_single": ("single", {}),
-    "tripoSR_single": ("single", {}),
-    "tripo3d_v2p5_single": ("single", {}),
-    "hunyuan3d_v2_single": ("single", {}),
-    "hunyuan3d_v2p1_single": ("single", {}),
-}
-
-
-def _apply_policy(algo: str, image_files: List[str], single_image_policy: str) -> Tuple[List[str], Optional[str]]:
-    """Dispatcher for image selection policies."""
-    mode, kwargs = _POLICIES.get(algo, ("", {}))
-    if mode == "single":
-        return _select_for_single(image_files, policy=single_image_policy)
-    if mode == "first_k":
-        return _select_first_k(image_files, **kwargs)
-    if mode == "min_all":
-        return _select_min_n_all(image_files, **kwargs)
-    if mode == "min_max":
-        return _select_min_max(image_files, **kwargs)
-    return [], f"unknown_algo_policy:{algo}"
+    return selected, ""
 
 
 # -------------------------------
-# Helpers
+# Filtering
 # -------------------------------
 
-def _sha1(text: str) -> str:
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _load_items_csv(paths: PathResolver) -> pd.DataFrame:
-    p = paths.items_csv
-    if not p.exists():
-        raise FileNotFoundError(f"items.csv not found at {p}.\nRun 'archi3d catalog build' first.")
-    return pd.read_csv(p, dtype=str, encoding='utf-8-sig').fillna("")
-
-
-def _existing_completed_for_run(paths: PathResolver, run_id: str) -> set[str]:
-    """Scans the results table for jobs completed specifically FOR THE GIVEN RUN_ID."""
-    p = paths.results_parquet
-    if not p.exists():
-        return set()
-    df = pd.read_parquet(p)
-    if df.empty:
-        return set()
-    subset = df[(df["run_id"] == run_id) & (df["status"] == "completed")]
-    return set(subset["job_id"].astype(str).tolist())
-
-
-def _already_queued(queue_dir: Path, job_id_prefix: str) -> bool:
-    """Check for any token file that contains the unique job hash identifier."""
-    return len(list(queue_dir.glob(f"*_h{job_id_prefix}.*.json"))) > 0
-
-
-def _compose_job_id(algo: str, product_id: str, variant: str, image_csv: str, version: Optional[str] = None) -> str:
+def _apply_filters(
+    items_df: pd.DataFrame,
+    include: Optional[str] = None,
+    exclude: Optional[str] = None,
+    with_gt_only: bool = False,
+    limit: Optional[int] = None,
+) -> tuple[pd.DataFrame, dict[str, int]]:
     """
-    Computes a deterministic job ID. If a version string is provided, it is
-    included in the hash for backward compatibility with legacy job IDs.
-    Otherwise, the hash is version-agnostic.
+    Apply filtering rules in order: include → exclude → with_gt_only → limit.
+
+    Returns:
+        (filtered_df, skip_counts) where skip_counts has keys like 'filtered_include', 'filtered_exclude', etc.
     """
-    material = f"{algo}|{product_id}|{variant}|{image_csv}"
-    if version:
-        material += f"|{version}"
-    return _sha1(material)
+    skip_counts: dict[str, int] = {}
+    df = items_df.copy()
+    initial_count = len(df)
 
+    # 1. Include filter (match on product_id, variant, or product_name)
+    if include:
+        pattern = include.lower()
+        mask = (
+            df["product_id"].str.lower().str.contains(pattern, na=False, regex=False) |
+            df["variant"].str.lower().str.contains(pattern, na=False, regex=False) |
+            df["product_name"].str.lower().str.contains(pattern, na=False, regex=False)
+        )
+        excluded = int(initial_count - mask.sum())
+        if excluded > 0:
+            skip_counts["filtered_include"] = excluded
+        df = df[mask].reset_index(drop=True)
 
-def _readable_token_name(product_id: str, algo: str, n_images: int, img_suffixes: str, run_id: str, job_id: str) -> str:
-    """Creates a readable token name, preserving suffix casing."""
-    job8 = job_id[:8]
-    core = f"{slugify(product_id)}_{slugify(algo)}_N{n_images}"
-    if img_suffixes:
-        core += f"_{img_suffixes}"
-    core += f"_{slugify(run_id)}_h{job8}"
-    return f"{core[:120]}.todo.json"
+    # 2. Exclude filter
+    if exclude:
+        pattern = exclude.lower()
+        mask = ~(
+            df["product_id"].str.lower().str.contains(pattern, na=False, regex=False) |
+            df["variant"].str.lower().str.contains(pattern, na=False, regex=False) |
+            df["product_name"].str.lower().str.contains(pattern, na=False, regex=False)
+        )
+        excluded = int(len(df) - mask.sum())
+        if excluded > 0:
+            skip_counts["filtered_exclude"] = excluded
+        df = df[mask].reset_index(drop=True)
+
+    # 3. with-gt-only
+    if with_gt_only:
+        mask = df["gt_object_path"].str.strip().str.len() > 0
+        excluded = int(len(df) - mask.sum())
+        if excluded > 0:
+            skip_counts["with_gt_only"] = excluded
+        df = df[mask].reset_index(drop=True)
+
+    # 4. Limit (apply last)
+    if limit is not None and limit > 0 and len(df) > limit:
+        df = df.head(limit).reset_index(drop=True)
+
+    return df, skip_counts
 
 
 # -------------------------------
-# Public API
+# Batch Creation
 # -------------------------------
 
 def create_batch(
     run_id: str,
-    algorithms: List[str],
+    algos: list[str],
     paths: PathResolver,
-    only: Optional[str] = None,
-    legacy_version: Optional[str] = None, # Add new parameter
-) -> Tuple[Path, Dict]:
+    image_policy: str = "use_up_to_6",
+    limit: Optional[int] = None,
+    include: Optional[str] = None,
+    exclude: Optional[str] = None,
+    with_gt_only: bool = False,
+    dry_run: bool = False,
+) -> dict:
     """
-    Create a run manifest and queue tokens under runs/<run_id>/queue/.
-    Enforces per-algorithm image count constraints and single-image policies.
-    Skips jobs already completed for the same (run_id, job_id).
+    Create a batch of jobs for the given run_id and algorithms.
+
+    Reads tables/items.csv, applies filters and image selection policy,
+    upserts rows to tables/generations.csv with status='enqueued',
+    and creates runs/<run_id>/manifest.csv.
+
+    Args:
+        run_id: Unique run identifier (e.g., UTC timestamp slug).
+        algos: List of algorithm keys to create jobs for.
+        paths: PathResolver instance.
+        image_policy: Image selection policy (currently only 'use_up_to_6').
+        limit: Maximum number of items to process (applied after other filters).
+        include: Include filter pattern (substring match on product_id/variant/product_name).
+        exclude: Exclude filter pattern.
+        with_gt_only: If True, skip items without GT object.
+        dry_run: If True, don't write files, only compute summary.
+
+    Returns:
+        Summary dict with counts and skip reasons.
+
+    Raises:
+        FileNotFoundError: If tables/items.csv doesn't exist.
+        ValueError: If image_policy is not supported.
     """
-    paths.validate_expected_tree()
+    # Validate workspace
+    paths.ensure_mutable_tree()
 
-    single_image_policy = _read_single_image_policy()
+    # Validate policy
+    if image_policy != "use_up_to_6":
+        raise ValueError(f"Unsupported image policy: {image_policy}")
 
-    run_cfg_path = paths.run_config_path(run_id)
-    run_cfg = {
-        "run_id": run_id,
-        "created_at": _now_iso(),
-        "code_version": __version__,
-        "algorithms": algorithms,
-        "batch_config": {
-            "single_image_policy": single_image_policy,
-            "legacy_version_hashing": legacy_version,
-        },
-    }
-    write_yaml(run_cfg_path, run_cfg)
+    # Read items.csv
+    items_csv_path = paths.items_csv_path()
+    if not items_csv_path.exists():
+        raise FileNotFoundError(
+            f"items.csv not found at {items_csv_path}.\n"
+            "Run 'archi3d catalog build' first."
+        )
 
-    items = _load_items_csv(paths)
-    if only:
-        items = items[items["product_id"].apply(lambda s: fnmatch.fnmatchcase(s, only))].reset_index(drop=True)
+    items_df = pd.read_csv(
+        items_csv_path,
+        dtype={"product_id": str, "variant": str},
+        encoding="utf-8-sig",
+    ).fillna("")
 
-    queue_dir = paths.queue_dir(run_id)
-    _ = paths.outputs_dir(run_id)  # ensure exists
+    # Apply filters
+    filtered_df, filter_skip_counts = _apply_filters(
+        items_df,
+        include=include,
+        exclude=exclude,
+        with_gt_only=with_gt_only,
+        limit=limit,
+    )
 
-    completed_job_ids = _existing_completed_for_run(paths, run_id)
-    manifest_rows: List[ManifestRow] = []
+    candidates = int(len(filtered_df))
 
-    for _, row in items.iterrows():
-        product_id = row["product_id"].strip()
-        variant = row["variant"].strip()
-        gt_rel = row["gt_fbx_relpath"].strip()
-        image_files = [p for p in row["image_files"].split(";") if p.strip()]
+    # Build generation records
+    generation_records = []
+    skip_reasons: dict[str, int] = {}
 
-        for algo in algorithms:
-            selected, reason = _apply_policy(algo, image_files, single_image_policy)
-            img_suffixes = _img_suffixes_from_list(selected)
-            image_csv = ",".join(selected)
-            
-            # Use the legacy_version for hashing if provided
-            job_id = _compose_job_id(algo, product_id, variant, image_csv, version=legacy_version)
-            job_id8 = job_id[:8]
+    for algo in algos:
+        for _, row in filtered_df.iterrows():
+            # Extract parent fields
+            product_id = str(row["product_id"]).strip()
+            variant = str(row["variant"]).strip()
+            manufacturer = str(row["manufacturer"]).strip()
+            product_name = str(row["product_name"]).strip()
+            category_l1 = str(row["category_l1"]).strip()
+            category_l2 = str(row["category_l2"]).strip()
+            category_l3 = str(row["category_l3"]).strip()
+            description = str(row["description"]).strip()
+            source_n_images = int(row["n_images"])
+            gt_object_path = str(row["gt_object_path"]).strip()
 
-            if reason:
-                manifest_rows.append(
-                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, reason)
-                )
+            # Collect source images
+            source_images = []
+            for i in range(1, 7):
+                path = str(row.get(f"image_{i}_path", "")).strip()
+                if path:
+                    source_images.append(path)
+
+            # Apply image selection policy
+            used_images, skip_reason = _select_images_use_up_to_6(row)
+
+            if skip_reason:
+                skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
                 continue
 
-            if job_id in completed_job_ids:
-                manifest_rows.append(
-                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_completed")
-                )
-                continue
+            # Compute job identity
+            image_set_hash = compute_image_set_hash(used_images)
+            job_id = compute_job_id(product_id, variant, algo, image_set_hash)
 
-            if _already_queued(queue_dir, job_id8):
-                manifest_rows.append(
-                    ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "already_queued")
-                )
-                continue
+            # Pad used images to 6 paths
+            used_images_padded = used_images + [""] * (6 - len(used_images))
 
-            token = {
-                "job_id": job_id,
-                "run_id": run_id,
+            # Pad source images to 6 paths
+            source_images_padded = source_images + [""] * (6 - len(source_images))
+
+            # Create generation record
+            record = {
+                # Carry-over from parent (observability)
                 "product_id": product_id,
                 "variant": variant,
+                "manufacturer": manufacturer,
+                "product_name": product_name,
+                "category_l1": category_l1,
+                "category_l2": category_l2,
+                "category_l3": category_l3,
+                "description": description,
+                "source_n_images": source_n_images,
+                "source_image_1_path": source_images_padded[0],
+                "source_image_2_path": source_images_padded[1],
+                "source_image_3_path": source_images_padded[2],
+                "source_image_4_path": source_images_padded[3],
+                "source_image_5_path": source_images_padded[4],
+                "source_image_6_path": source_images_padded[5],
+                "gt_object_path": gt_object_path,
+                # Batch/job metadata
+                "run_id": run_id,
+                "job_id": job_id,
                 "algo": algo,
-                "image_files": selected,
-                "gt_fbx_relpath": gt_rel,
-                "queued_at": _now_iso(),
-                "code_version": __version__,
-                "job_id_version": legacy_version, # Store how the ID was generated
+                "algo_version": "",  # Reserved for adapters to fill later
+                "used_n_images": len(used_images),
+                "used_image_1_path": used_images_padded[0],
+                "used_image_2_path": used_images_padded[1],
+                "used_image_3_path": used_images_padded[2],
+                "used_image_4_path": used_images_padded[3],
+                "used_image_5_path": used_images_padded[4],
+                "used_image_6_path": used_images_padded[5],
+                "image_set_hash": image_set_hash,
+                "status": "enqueued",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "notes": "",
             }
-            token_name = _readable_token_name(product_id, algo, len(selected), img_suffixes, run_id, job_id)
-            write_json(queue_dir / token_name, token)
 
-            manifest_rows.append(
-                ManifestRow(product_id, algo, image_csv, img_suffixes, len(selected), gt_rel, job_id, "")
-            )
+            generation_records.append(record)
 
-    manifest_path = paths.manifest_inputs_csv(run_id)
-    mdf = pd.DataFrame(
-        [r.__dict__ for r in manifest_rows],
-        columns=["product_id", "algo", "image_set_csv", "img_suffixes", "n_images", "gt_fbx_relpath", "job_id", "reason"],
-    ).sort_values(["product_id", "algo"], kind="stable")
+    # Combine filter skip counts with policy skip counts
+    all_skip_reasons = {**filter_skip_counts, **skip_reasons}
 
+    enqueued = len(generation_records)
+    skipped = sum(all_skip_reasons.values())
+
+    # Build summary
     summary = {
+        "event": "batch_create",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id,
-        "created_at": _now_iso(),
-        "code_version": __version__,
-        "user_filter": only or "all",
-        "algorithms": algorithms,
-        "policy": {"single_image": single_image_policy, "legacy_version_hashing": legacy_version},
-        "counts": {
-            "manifest_rows": int(mdf.shape[0]),
-            "enqueued": int((mdf["reason"] == "").sum()),
-            "skipped": int((mdf["reason"] != "").sum()),
-        },
-        "skip_reasons": {k: int(v) for k, v in mdf[mdf["reason"] != ""]["reason"].value_counts().to_dict().items()},
+        "algos": algos,
+        "image_policy": image_policy,
+        "candidates": candidates,
+        "enqueued": enqueued,
+        "skipped": skipped,
+        "skip_reasons": all_skip_reasons,
+        "dry_run": dry_run,
     }
 
-    lock_path = paths.manifest_lock_path(run_id)
-    with FileLock(str(lock_path)):
-        mdf.to_csv(manifest_path, index=False, encoding="utf-8-sig")
-        log_path = manifest_path.with_name("batch_creation_log.yaml")
-        with log_path.open("a", encoding="utf-8") as f:
-            f.write("---\n")
-            yaml.safe_dump(summary, f, allow_unicode=True, sort_keys=False)
+    if dry_run:
+        # Log summary with dry_run flag but don't write files
+        log_path = paths.batch_create_log_path()
+        append_log_record(log_path, summary)
+        return summary
 
-    return manifest_path, summary
+    # Write to generations.csv (atomic upsert)
+    if generation_records:
+        generations_df = pd.DataFrame(generation_records)
+        generations_csv_path = paths.generations_csv_path()
+        inserted, updated = upsert_generations(generations_csv_path, generations_df)
+
+        # If all rows were updated (not inserted), count them as duplicate_job
+        if updated > 0 and inserted == 0:
+            all_skip_reasons["duplicate_job"] = updated
+            enqueued = inserted
+            skipped += updated
+            summary["enqueued"] = enqueued
+            summary["skipped"] = skipped
+            summary["skip_reasons"] = all_skip_reasons
+
+    # Write per-run manifest (derived from generations.csv)
+    if generation_records:
+        # Read back the just-upserted rows for this run_id with status=enqueued
+        generations_csv_path = paths.generations_csv_path()
+        if generations_csv_path.exists():
+            full_gen_df = pd.read_csv(
+                generations_csv_path,
+                dtype={"product_id": str, "variant": str, "run_id": str, "job_id": str},
+                encoding="utf-8-sig",
+            )
+            run_enqueued = full_gen_df[
+                (full_gen_df["run_id"] == run_id) &
+                (full_gen_df["status"] == "enqueued")
+            ].copy()
+
+            # Build manifest with required columns
+            manifest_cols = [
+                "job_id", "product_id", "variant", "algo", "used_n_images",
+                "used_image_1_path", "used_image_2_path", "used_image_3_path",
+                "used_image_4_path", "used_image_5_path", "used_image_6_path",
+                "image_set_hash",
+                # Optional convenience columns
+                "gt_object_path", "product_name", "manufacturer",
+            ]
+
+            # Ensure all required columns exist (handle empty dataframe)
+            for col in manifest_cols:
+                if col not in run_enqueued.columns:
+                    run_enqueued[col] = ""
+
+            manifest_df = run_enqueued[manifest_cols].copy()
+
+            # Write manifest
+            manifest_path = paths.run_root(run_id) / "manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_df.to_csv(manifest_path, index=False, encoding="utf-8-sig")
+
+    # Log summary
+    log_path = paths.batch_create_log_path()
+    append_log_record(log_path, summary)
+
+    return summary

@@ -114,36 +114,53 @@ Scan the `workspace/dataset/` folder to create an inventory of all products, ima
 archi3d catalog build
 ```
 
-**2. Create a Batch of Jobs**
+**2. Create a Batch of Jobs (Phase 2)**
 
-Define a new experiment run. This command reads `tables/items.csv` and creates a queue of jobs to be processed, providing a detailed summary of how many jobs were created and how many were skipped (and why).
+Define a new experiment run. This command reads `tables/items.csv` and creates:
+- A per-run job registry in `tables/generations.csv` (the SSOT for all generated artifacts)
+- A per-run manifest at `runs/<run_id>/manifest.csv`
+- Structured logs in `logs/batch_create.log`
 
-  * `--run-id`: Give your experiment a unique name.
-  * `--only`: (Optional) A filter to run the experiment on a small subset of products, perfect for testing.
+The system provides a detailed summary of how many jobs were enqueued and how many were skipped (with reasons).
 
-<!-- end list -->
+**Basic Usage:**
+```bash
+# Auto-generates run_id, uses default algorithm
+archi3d batch create
 
+# Explicit run_id and algorithms
+archi3d batch create --run-id "2025-10-20-experiment" --algos tripo3d_v2p5,trellis_single
 ```
-archi3d batch create --run-id "initial-test-run" --only "335888*"
+
+**Common Options:**
+  * `--run-id`: Give your experiment a unique name (auto-generated UTC timestamp if omitted)
+  * `--algos`: Comma-separated algorithm keys (uses first configured algorithm if omitted)
+  * `--limit`: Process only first N items (useful for testing)
+  * `--include`: Filter to include only matching products (substring match on product_id/variant/product_name)
+  * `--exclude`: Filter to exclude matching products
+  * `--with-gt-only`: Skip items without ground truth models
+  * `--dry-run`: Preview changes without writing files
+
+**Examples:**
+```bash
+# Test run with 10 items
+archi3d batch create --run-id "test-run" --algos tripo3d_v2p5 --limit 10
+
+# Only items with ground truth
+archi3d batch create --run-id "gt-only-run" --algos tripo3d_v2p5 --with-gt-only
+
+# Filter by product ID
+archi3d batch create --run-id "product-335888" --include "335888" --algos tripo3d_v2p5
+
+# Dry-run to preview
+archi3d batch create --run-id "preview" --algos tripo3d_v2p5 --dry-run
 ```
 
-This will create a new folder under `workspace/runs/initial-test-run/` containing the job queue and a historical log of all batch creation operations.
-
-> **Re-running a Batch with a Legacy Version**
->
-> If you need to re-run the batch creation for an *existing run* that was created with a previous version (e.g., 0.1.0), you can use the `--legacy-version` flag to ensure already-completed jobs are skipped correctly.
->
-> **How to Use the New Command**
->
-> You can now re-run your batch creation command for the existing run, specifying the version that was used to create the original jobs (0.1.0).
->
-> ```bash
-> # Delete the incorrect .todo.json files from the queue first
-> # Then run:
-> archi3d batch create --run-id "2025-08-17_v1" --legacy-version "0.1.0"
-> ```
->
-> This will correctly match the `job_ids` against those in `results.parquet` and skip the completed jobs. For all new runs with new `run_id`s, you can simply omit the `--legacy-version` flag to use the new, version-agnostic hashing.
+**Key Features:**
+- **Deterministic job IDs**: Re-running with same inputs creates same job IDs (idempotent)
+- **SSOT Registry**: All jobs tracked in `tables/generations.csv` with full observability
+- **Atomic operations**: Safe for concurrent access via file locking
+- **Flexible filtering**: Include/exclude patterns, GT-only mode, item limits
 
 **3. Run a Worker to Process Jobs**
 
