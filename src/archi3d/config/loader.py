@@ -1,21 +1,36 @@
 # src/archi3d/config/loader.py
+"""
+Configuration loading with 3-layer merge and .env support.
+
+Configuration Precedence (highest to lowest):
+1. Environment variable ARCHI3D_WORKSPACE
+2. .env file in repository root (auto-loaded)
+3. User config at platform-specific location:
+   - Windows: %LOCALAPPDATA%/archi3d/archi3d/config.yaml
+   - Linux: ~/.config/archi3d/config.yaml
+   - macOS: ~/Library/Application Support/archi3d/config.yaml
+
+The .env file is loaded early, populating os.environ before other checks.
+This allows `ARCHI3D_WORKSPACE=...` in .env to work seamlessly.
+"""
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from platformdirs import user_config_path
 
-from archi3d.config.schema import GlobalConfig, UserConfig, EffectiveConfig
-
+from archi3d.config.schema import EffectiveConfig, GlobalConfig, UserConfig
 
 REPO_GLOBAL_FILENAME = "global.yaml"
 ENV_WORKSPACE = "ARCHI3D_WORKSPACE"
+DOTENV_FILENAME = ".env"
 
 
-def _read_yaml(path: Path) -> Dict[str, Any]:
+def _read_yaml(path: Path) -> dict[str, Any]:
     """
     Reads and parses a YAML file.
 
@@ -38,7 +53,26 @@ def _read_yaml(path: Path) -> Dict[str, Any]:
     return data
 
 
-def _find_repo_root(start: Optional[Path] = None, max_depth: int = 6) -> Path:
+def _load_dotenv(repo_root: Path) -> bool:
+    """
+    Load .env file from the repository root if it exists.
+
+    Args:
+        repo_root: The path to the repository root.
+
+    Returns:
+        True if a .env file was found and loaded, False otherwise.
+    """
+    dotenv_path = repo_root / DOTENV_FILENAME
+    if dotenv_path.exists():
+        # override=False means existing env vars take precedence over .env
+        # This allows system-level ARCHI3D_WORKSPACE to override .env
+        load_dotenv(dotenv_path, override=False)
+        return True
+    return False
+
+
+def _find_repo_root(start: Path | None = None, max_depth: int = 6) -> Path:
     """
     Find the repository root by walking up from 'start' (cwd if None) until we find
     either a pyproject.toml or a global.yaml sentinel. Stops after max_depth levels.
@@ -63,7 +97,8 @@ def _find_repo_root(start: Optional[Path] = None, max_depth: int = 6) -> Path:
             break
         cur = cur.parent
     raise FileNotFoundError(
-        "Could not locate repository root (no pyproject.toml/global.yaml found within search depth). "
+        "Could not locate repository root "
+        "(no pyproject.toml/global.yaml found within search depth). "
         "Run from inside the repo, or set PYTHONPATH appropriately."
     )
 
@@ -89,7 +124,7 @@ def _load_global_config(repo_root: Path) -> GlobalConfig:
         raise ValueError(f"Invalid global config at {global_path}: {e}") from e
 
 
-def _load_user_config() -> Optional[UserConfig]:
+def _load_user_config() -> UserConfig | None:
     """
     Load per-user config from the OS-specific user config directory.
     e.g., ~/.config/archi3d/config.yaml on Linux
@@ -108,7 +143,7 @@ def _load_user_config() -> Optional[UserConfig]:
         raise ValueError(f"Invalid user config at {user_cfg_path}: {e}") from e
 
 
-def _apply_env_overrides(user_cfg: Optional[UserConfig]) -> UserConfig:
+def _apply_env_overrides(user_cfg: UserConfig | None) -> UserConfig:
     """
     ENV has highest precedence for workspace.
     If ARCHI3D_WORKSPACE is set, use it; otherwise return user_cfg as-is.
@@ -129,10 +164,12 @@ def _apply_env_overrides(user_cfg: Optional[UserConfig]) -> UserConfig:
             # Generate the expected path for the error message
             expected_config_path = user_config_path(appname="archi3d") / "config.yaml"
             raise RuntimeError(
-                "Workspace is not configured. Please set either:\n"
-                f" - ENV {ENV_WORKSPACE}=<absolute path to Testing>, or\n"
-                f" - A config file at '{expected_config_path}' with:\n"
-                '   workspace: "C:/path/to/Testing"\n'
+                "Workspace is not configured. Please set one of:\n"
+                f" 1. Create a .env file in the repository root with:\n"
+                f'    {ENV_WORKSPACE}="C:/path/to/workspace"\n'
+                f" 2. Set environment variable {ENV_WORKSPACE}\n"
+                f" 3. Create a config file at '{expected_config_path}' with:\n"
+                '    workspace: "C:/path/to/workspace"\n'
             )
         return user_cfg
 
@@ -143,12 +180,17 @@ def _apply_env_overrides(user_cfg: Optional[UserConfig]) -> UserConfig:
     return UserConfig(workspace=ws)
 
 
-def load_config(start: Optional[Path] = None) -> EffectiveConfig:
+def load_config(start: Path | None = None) -> EffectiveConfig:
     """
     Public entry point used by the CLI.
-    Merge order:
-      repo global.yaml  ->  user config (platform-specific)  ->  ENV ARCHI3D_WORKSPACE
-    Returns an EffectiveConfig with validated models.
+
+    Configuration precedence (highest to lowest):
+      1. Environment variable ARCHI3D_WORKSPACE (system-level)
+      2. .env file in repo root (loaded into os.environ)
+      3. User config file (platform-specific location)
+
+    The .env file is loaded early, so ARCHI3D_WORKSPACE in .env works seamlessly.
+    System-level env vars always take precedence over .env values.
 
     Args:
         start: The starting directory for finding the repo root.
@@ -160,6 +202,11 @@ def load_config(start: Optional[Path] = None) -> EffectiveConfig:
         FileNotFoundError: If the configured workspace directory does not exist.
     """
     repo_root = _find_repo_root(start)
+
+    # Load .env BEFORE checking env vars, so .env values become available
+    # Note: override=False in _load_dotenv means system env vars win over .env
+    _load_dotenv(repo_root)
+
     global_cfg = _load_global_config(repo_root)
     user_cfg_file = _load_user_config()
     user_cfg_final = _apply_env_overrides(user_cfg_file)

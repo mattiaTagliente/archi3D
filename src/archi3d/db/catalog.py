@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +16,7 @@ from typing import Any
 import pandas as pd
 
 from archi3d.config.paths import PathResolver
-from archi3d.utils.io import append_log_record, write_text_atomic
+from archi3d.utils.io import append_log_record
 
 # --- Constants ---
 
@@ -28,6 +27,7 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 _GT_EXTENSIONS_PRIORITY = [".glb", ".fbx"]  # Prefer .glb over .fbx
 
 _MAX_IMAGES = 6
+_MAX_CATEGORIES = 3
 
 
 # --- Data Structures ---
@@ -195,6 +195,8 @@ def _load_products_json(json_path: Path) -> dict[str, dict[str, Any]]:
     """
     Load and parse products-with-3d.json into a lookup dict.
 
+    Supports multiple ID field names: _id, ProductId, product_id (in priority order).
+
     Returns:
         Dict keyed by product_id (string)
     """
@@ -206,9 +208,20 @@ def _load_products_json(json_path: Path) -> dict[str, dict[str, Any]]:
             data = json.load(f)
 
         # Assuming the JSON is a list of products, each with an ID field
-        # Adapt this based on actual JSON structure
+        # Check multiple possible ID field names in priority order
         if isinstance(data, list):
-            return {str(item.get("ProductId", item.get("product_id", ""))): item for item in data}
+            result = {}
+            for item in data:
+                # Try multiple ID field names
+                product_id = (
+                    item.get("_id")
+                    or item.get("ProductId")
+                    or item.get("product_id")
+                    or ""
+                )
+                if product_id:
+                    result[str(product_id)] = item
+            return result
         elif isinstance(data, dict):
             # If it's already a dict, return as-is (assuming keys are product_ids)
             return {str(k): v for k, v in data.items()}
@@ -219,9 +232,58 @@ def _load_products_json(json_path: Path) -> dict[str, dict[str, Any]]:
         return {}
 
 
+def _extract_category_names(categories: list[Any]) -> list[str]:
+    """
+    Extract category names from a list of category objects.
+
+    Supports two formats:
+    1. Flat objects: [{"Name": {"it": "Poltrone"}}, {"Name": {"it": "Lounge"}}]
+    2. Hierarchical strings: "Furniture > Chairs > Armchairs"
+
+    Returns:
+        List of category names (up to 3 levels)
+    """
+    cat_names: list[str] = []
+
+    for cat in categories:
+        if isinstance(cat, dict):
+            name_obj = cat.get("Name", {})
+            if isinstance(name_obj, dict):
+                cat_name = name_obj.get("it") or name_obj.get("en") or ""
+            elif isinstance(name_obj, str):
+                cat_name = name_obj
+            else:
+                cat_name = ""
+
+            if cat_name:
+                # Check if hierarchical (contains " > ")
+                if " > " in cat_name:
+                    # Split hierarchical string into parts
+                    cat_names.extend(cat_name.split(" > "))
+                else:
+                    cat_names.append(cat_name)
+        elif isinstance(cat, str) and cat:
+            if " > " in cat:
+                cat_names.extend(cat.split(" > "))
+            else:
+                cat_names.append(cat)
+
+    # Return first 3 unique categories
+    seen: set[str] = set()
+    unique: list[str] = []
+    for name in cat_names:
+        if name not in seen:
+            seen.add(name)
+            unique.append(name)
+            if len(unique) >= _MAX_CATEGORIES:
+                break
+
+    return unique
+
+
 def _extract_enrichment_data(
     product_id: str,
-    products_lookup: dict[str, dict[str, Any]]
+    products_lookup: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, str], list[str]]:
     """
     Extract enrichment fields from products-with-3d.json for a given product_id.
@@ -261,7 +323,11 @@ def _extract_enrichment_data(
         if isinstance(value_obj, dict):
             enrichment["product_name"] = value_obj.get("it") or value_obj.get("en") or ""
         else:
-            enrichment["product_name"] = name_obj.get("it") or name_obj.get("en") or str(name_obj.get("Name", ""))
+            enrichment["product_name"] = (
+                name_obj.get("it")
+                or name_obj.get("en")
+                or str(name_obj.get("Name", ""))
+            )
     elif isinstance(name_obj, str):
         enrichment["product_name"] = name_obj
 
@@ -282,39 +348,22 @@ def _extract_enrichment_data(
     if not enrichment["description"]:
         issues.append("missing_description")
 
-    # Extract categories (choose deepest path, take first 3 levels)
+    # Extract categories - supports both flat objects and hierarchical strings
     categories = product_data.get("Categories", [])
     if isinstance(categories, list) and categories:
-        # Find the deepest category path
-        deepest = None
-        max_depth = 0
+        cat_names = _extract_category_names(categories)
+        if cat_names:
+            enrichment["category_l1"] = cat_names[0] if cat_names else ""
+            enrichment["category_l2"] = cat_names[1] if len(cat_names) > 1 else ""
+            enrichment["category_l3"] = (
+                cat_names[2] if len(cat_names) >= _MAX_CATEGORIES else ""
+            )
 
-        for cat in categories:
-            if isinstance(cat, dict):
-                name_obj = cat.get("Name", {})
-                if isinstance(name_obj, dict):
-                    cat_name = name_obj.get("it") or name_obj.get("en") or ""
-                elif isinstance(name_obj, str):
-                    cat_name = name_obj
-                else:
-                    cat_name = ""
-
-                # Count depth by hierarchy (assuming categories have some structure)
-                # For now, just use the first category found
-                # In reality, you'd need to parse the category tree structure
-                if cat_name:
-                    # Simplified: split by " > " or similar delimiter if present
-                    parts = cat_name.split(" > ") if " > " in cat_name else [cat_name]
-                    if len(parts) > max_depth:
-                        max_depth = len(parts)
-                        deepest = parts
-
-        if deepest:
-            enrichment["category_l1"] = deepest[0] if len(deepest) > 0 else ""
-            enrichment["category_l2"] = deepest[1] if len(deepest) > 1 else ""
-            enrichment["category_l3"] = deepest[2] if len(deepest) > 2 else ""
-
-    if not any([enrichment["category_l1"], enrichment["category_l2"], enrichment["category_l3"]]):
+    if not any([
+        enrichment["category_l1"],
+        enrichment["category_l2"],
+        enrichment["category_l3"],
+    ]):
         issues.append("missing_categories")
 
     return enrichment, issues
@@ -345,9 +394,15 @@ def build_catalog(
     if products_json_path and products_json_path.exists():
         products_lookup = _load_products_json(products_json_path)
         source_json_present = True
-        print(f"Loaded enrichment data for {len(products_lookup)} products from {products_json_path}")
+        print(
+            f"Loaded enrichment data for {len(products_lookup)} products "
+            f"from {products_json_path}"
+        )
     else:
-        print(f"Warning: Products JSON not found at {products_json_path}, proceeding without enrichment")
+        print(
+            f"Warning: Products JSON not found at {products_json_path}, "
+            "proceeding without enrichment"
+        )
 
     # Collect all catalog items and issues
     catalog_items: list[CatalogItem] = []
@@ -395,8 +450,8 @@ def build_catalog(
             paths.rel_to_workspace(img).as_posix()
             for img in image_paths
         ]
-        # Pad to 6 paths
-        while len(image_rel_paths) < 6:
+        # Pad to _MAX_IMAGES paths
+        while len(image_rel_paths) < _MAX_IMAGES:
             image_rel_paths.append("")
 
         gt_rel_path = ""
@@ -436,7 +491,8 @@ def build_catalog(
         for issue_type in all_issue_types:
             detail = ""
             if issue_type == "too_many_images":
-                detail = f"Found {len(image_paths) + len(img_issues)} images, capped at {_MAX_IMAGES}"
+                found_count = len(image_paths) + len(img_issues)
+                detail = f"Found {found_count} images, capped at {_MAX_IMAGES}"
                 too_many_images_count += 1
             elif issue_type == "no_images":
                 no_images_count += 1
@@ -486,10 +542,17 @@ def build_catalog(
 
     # Write structured log summary
     log_path = paths.catalog_build_log_path()
-    dataset_rel = paths.rel_to_workspace(dataset_path) if dataset_path.is_absolute() else dataset_path
+    if dataset_path.is_absolute():
+        dataset_rel = paths.rel_to_workspace(dataset_path)
+    else:
+        dataset_rel = dataset_path
+
     json_rel = None
     if products_json_path and products_json_path.exists():
-        json_rel = paths.rel_to_workspace(products_json_path) if products_json_path.is_absolute() else products_json_path
+        if products_json_path.is_absolute():
+            json_rel = paths.rel_to_workspace(products_json_path)
+        else:
+            json_rel = products_json_path
 
     log_record = {
         "event": "catalog_build",
@@ -507,12 +570,12 @@ def build_catalog(
 
     append_log_record(log_path, log_record)
 
-    print(f"\nCatalog build complete:")
+    print("\nCatalog build complete:")
     print(f"  Items total: {len(catalog_items)}")
     print(f"  With images: {items_with_img}")
     print(f"  With GT: {items_with_gt}")
     print(f"  Issues: {len(all_issues)}")
-    print(f"\nOutput files:")
+    print("\nOutput files:")
     print(f"  {items_csv_path}")
     print(f"  {issues_csv_path}")
     print(f"  {log_path}")

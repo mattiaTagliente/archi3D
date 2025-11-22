@@ -16,8 +16,8 @@ Archi3D is a CLI orchestrator for large-scale 2D-to-3D model generation experime
 uv venv
 .venv\Scripts\Activate.ps1
 
-# Install dependencies
-uv pip install -r requirements.lock.txt -e .
+# Install dependencies (uses pyproject.toml + uv.lock)
+uv pip install -e .
 ```
 
 ### Linting and Type Checking
@@ -57,12 +57,17 @@ pytest --cov=src/archi3d
 - Phase 6 tests: ✅ Complete (9 tests covering VFScore computation and visual fidelity metrics)
 
 ### Dependency Management
-```bash
-# Compile new lock file from pyproject.toml
-pip-compile pyproject.toml -o requirements.lock.txt
+Dependencies are defined in `pyproject.toml`. The `uv.lock` file is auto-managed by `uv` for reproducible installs.
 
-# Upgrade all dependencies
-pip-compile --upgrade pyproject.toml -o requirements.lock.txt
+```bash
+# Add a new dependency: edit pyproject.toml, then reinstall
+uv pip install -e .
+
+# Upgrade all dependencies and regenerate lockfile
+uv lock --upgrade
+
+# Sync environment to match lockfile exactly
+uv sync
 ```
 
 ### Running the CLI
@@ -85,13 +90,25 @@ archi3d compute vfscore --run-id "test-run" --dry-run    # Preview VFScore compu
 
 ## Architecture
 
-### Configuration System (3-Layer Merge)
-The configuration system resolves settings in priority order:
-1. **`global.yaml`** (repo root): Project-wide algorithms, thresholds, batch policies
-2. **`~/.archi3d/config.yaml`** (user-specific): Workspace path overrides
-3. **Environment variables**: `ARCHI3D_WORKSPACE` (highest priority)
+### Configuration System (3-Layer Merge + dotenv)
+The configuration system resolves workspace settings in priority order (highest to lowest):
+1. **Environment variable** `ARCHI3D_WORKSPACE` - for CI/CD and containers
+2. **`.env` file** in repository root - recommended for local development (auto-loaded via python-dotenv)
+3. **User config file** at platform-specific location:
+   - Windows: `%LOCALAPPDATA%/archi3d/archi3d/config.yaml`
+   - Linux: `~/.config/archi3d/config.yaml`
+   - macOS: `~/Library/Application Support/archi3d/config.yaml`
 
-Configuration is loaded via `archi3d.config.loader.load_config()` and validated using Pydantic models in `archi3d.config.schema`. The `PathResolver` (in `archi3d.config.paths`) translates the workspace root into all derived paths (`dataset/`, `runs/`, `tables/`, `reports/`, `logs/`).
+Global project settings (algorithms, thresholds, batch policies) are loaded from `global.yaml` in the repo root.
+
+Configuration is loaded via `archi3d.config.loader.load_config()` which:
+1. Finds the repo root (via pyproject.toml/global.yaml sentinel)
+2. Loads `.env` file if present (populates `os.environ`)
+3. Loads `global.yaml` for project settings
+4. Loads user config from platformdirs location
+5. Applies environment variable overrides
+
+Validated using Pydantic models in `archi3d.config.schema`. The `PathResolver` (in `archi3d.config.paths`) translates the workspace root into all derived paths (`dataset/`, `runs/`, `tables/`, `reports/`, `logs/`).
 
 **PathResolver Capabilities (Phase 0)**:
 - **Directory Properties**: `tables_root`, `runs_root`, `reports_root`, `logs_root` (with backward-compatible `_dir` aliases)

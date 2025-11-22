@@ -56,13 +56,46 @@ Create the following folder structure inside your shared workspace:
 
 ```
 Testing/
-├── dataset/
+├── dataset/                    # Product folders with images and ground truth models
+│   ├── 335888/                 # Folder name = product ID
+│   │   ├── images/             # Product images (_A.jpg, _B.jpg, etc.)
+│   │   └── gt/                 # Ground truth 3D models (.glb preferred, .fbx fallback)
+│   └── 335888 - Curved/        # Folder with variant: "335888 - Curved backrest"
+├── products-with-3d.json       # (Optional) Product metadata for enrichment
 ├── reports/
 ├── runs/
 └── tables/
 ```
 
-Next, you must tell Archi3D where to find this workspace. The recommended way is to use a `.env` file.
+**Product Metadata Enrichment (Optional)**
+
+Place a `products-with-3d.json` file in the workspace root to enrich catalog items with:
+- Manufacturer name
+- Product name (Italian preferred, English fallback)
+- Description
+- Categories (up to 3 levels)
+
+The JSON should be a list of products with `_id` matching folder product IDs:
+```json
+[
+  {
+    "_id": 335888,
+    "Manufacturer": {"Name": "ACME Corp"},
+    "Name": {"Value": {"it": "Poltrona Moderna", "en": "Modern Armchair"}},
+    "ShortDescription": {"Value": {"it": "Descrizione...", "en": "Description..."}},
+    "Categories": [{"Name": {"it": "Poltrone", "en": "Armchairs"}}]
+  }
+]
+```
+
+Next, you must tell Archi3D where to find this workspace.
+
+**Configuration Precedence** (highest to lowest priority):
+1. **Environment variable** `ARCHI3D_WORKSPACE` - for CI/CD and containers
+2. **`.env` file** in repository root - recommended for local development
+3. **User config file** at platform-specific location - for persistent defaults
+
+**Recommended: Use a `.env` file**
 
 1.  **Create a `.env` file** in the root of the project by copying the example template:
     ```powershell
@@ -72,9 +105,21 @@ Next, you must tell Archi3D where to find this workspace. The recommended way is
 2.  **Edit the `.env` file** and set the `ARCHI3D_WORKSPACE` variable to the **absolute path** of your `Testing` folder. **Use forward slashes (`/`) for the path.**
     ```
     # .env
-    ARCHI3D_WORKSPACE="C:/Users/matti/Politecnico di Bari(1)/B4V - Archiproducts - General/Testing"
+    ARCHI3D_WORKSPACE="C:/Users/yourname/path/to/Testing"
     ```
-    > **Note:** The `.env` file is ignored by Git, so your local path will not be committed to the repository.
+    > **Note:** The `.env` file is gitignored and will not be committed to the repository.
+
+**Alternative: User config file**
+
+For persistent configuration across projects, create a config file at:
+- **Windows**: `%LOCALAPPDATA%/archi3d/archi3d/config.yaml`
+- **Linux**: `~/.config/archi3d/config.yaml`
+- **macOS**: `~/Library/Application Support/archi3d/config.yaml`
+
+```yaml
+# config.yaml
+workspace: "C:/Users/yourname/path/to/Testing"
+```
 
 ### 3\. Set Up the Python Environment
 
@@ -93,15 +138,17 @@ We will use `uv` to create an isolated virtual environment for the project.
 
 ### 4\. Install Dependencies
 
-Install all required packages using the `requirements.lock.txt` file. This ensures every developer has the exact same version of every dependency, guaranteeing reproducibility.
+Install all required packages directly from `pyproject.toml`. The `uv.lock` file ensures every developer gets the exact same versions, guaranteeing reproducibility.
 
-This command also installs the `archi3d` project itself in **editable mode** (`-e`), meaning any changes you make to the source code are immediately available without reinstalling.
+This command installs the `archi3d` project in **editable mode** (`-e`), meaning any changes you make to the source code are immediately available without reinstalling.
 
 ```
-uv pip install -r requirements.lock.txt -e .
+uv pip install -e .
 ```
 
-You are now ready to use the application\!
+> **Note:** `uv` automatically uses `uv.lock` for reproducible installs. The lockfile is managed automatically - you don't need to interact with it directly.
+
+You are now ready to use the application!
 
 ## 🛠️ Usage: The Experiment Workflow
 
@@ -109,11 +156,20 @@ The `archi3d` CLI guides you through the entire experiment process. Run these co
 
 **1. Build the Item Catalog**
 
-Scan the `workspace/dataset/` folder to create an inventory of all products, images, and ground truth models. This creates `tables/items.csv`.
+Scan the `workspace/dataset/` folder to create an inventory of all products, images, and ground truth models. If `products-with-3d.json` is present in the workspace, it enriches catalog entries with manufacturer, product name, description, and categories.
 
-```
+```bash
+# Basic usage (auto-discovers products-with-3d.json in workspace)
 archi3d catalog build
+
+# Specify custom paths
+archi3d catalog build --dataset /path/to/dataset --products-json /path/to/products.json
 ```
+
+**Output files:**
+- `tables/items.csv` - Main catalog with all products and enrichment data
+- `tables/items_issues.csv` - Issues found (missing images, multiple GT files, etc.)
+- `logs/catalog_build.log` - Structured build log
 
 **2. Create a Batch of Jobs (Phase 2)**
 
@@ -420,7 +476,7 @@ You have now completed a full end-to-end run of the experiment pipeline\! You ca
 ├── .env.example              # Template for environment variables
 ├── global.yaml               # Global, project-wide configuration
 ├── pyproject.toml            # Central project definition and dependencies
-├── requirements.lock.txt     # Pinned versions for reproducible installs
+├── uv.lock                   # Lockfile for reproducible installs (auto-managed by uv)
 └── README.md                 # This file
 ```
 

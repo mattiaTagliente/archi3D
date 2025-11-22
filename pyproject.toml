@@ -30,6 +30,7 @@ dependencies = [
   "rich>=13,<14",
   "filelock>=3.13,<4.0",
   "platformdirs>=4,<5",
+  "python-dotenv>=1.0,<2.0",
   "tqdm>=4.66,<5",
   "packaging>=24,<25",
   "requests",
@@ -42,7 +43,6 @@ dev = [
   "black>=24,<25",
   "mypy>=1.10,<2.0",
   "pytest>=8,<9",
-  "pip-tools>=7.4,<8.0",
 ]
 
 [project.scripts]
