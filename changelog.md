@@ -670,4 +670,179 @@ archi3d compute fscore --run-id "test-run" --only-status "failed" --with-gt-only
 - Error message truncation: 2000 characters (full error in result.json)
 - Concurrency is thread-based (not process-based)
 
-**Next Phase**: Phase 6+ (VFScore visual similarity metrics, final reporting)
+---
+
+### Phase 6 — Compute VFScore (Visual Fidelity Metrics) ✅ COMPLETE
+
+**Objective**: Implement `archi3d compute vfscore` command to render generated models under standardized Cycles setup and score visual fidelity against reference photos using LLM-based scoring. Upsert standardized VFScore columns into SSOT `tables/generations.csv` and persist per-job artifacts.
+
+**Implemented Components**:
+
+1. **VFScore Adapter Layer** (`src/archi3d/metrics/vfscore_adapter.py`):
+   - `VFScoreRequest` dataclass: Input specification (cand_glb, ref_images, out_dir, repeats, timeout_s, workspace)
+   - `VFScoreResponse` dataclass: Normalized result (ok, payload, tool_version, config_hash, render_runtime_s, scoring_runtime_s, error)
+   - `evaluate_vfscore(req)` — Main entry point with dual integration:
+     1. Try Python import API (`from vfscore.evaluator import evaluate_visual_fidelity`)
+     2. Fallback to CLI invocation (`python -m vfscore --cand-glb ... --ref-images ...`)
+   - `_normalize_payload(raw)` — Normalizes tool output into canonical schema
+   - Input validation: Checks candidate GLB and reference images exist on disk
+   - Automatic filtering: Uses only existing reference images from the provided list
+
+2. **Main Computation Logic** (`src/archi3d/metrics/vfscore.py`):
+   - `compute_vfscore(run_id, jobs, only_status, use_images_from, repeats, redo, max_parallel, timeout_s, dry_run)` — Main entry point
+   - `_get_reference_images(row, use_images_from, paths)` — Extracts reference images from used_image_* or source_image_* columns
+   - `_is_eligible(row, run_id, only_status, use_images_from, redo, jobs_filter, paths)` — Multi-criteria eligibility filtering
+   - `_process_job(row, repeats, use_images_from, timeout_s, paths, dry_run)` — Per-job processing workflow
+   - Parallel execution: ThreadPoolExecutor with configurable max_parallel
+   - Per-job artifacts: result.json, config.json, renders/, rationales/
+   - Atomic CSV upserts: Uses Phase 0 `update_csv_atomic()` with FileLock
+
+3. **CLI Integration** (`src/archi3d/cli.py`):
+   - `archi3d compute vfscore` command registered under `compute_app`
+   - Flags: `--run-id` (required), `--jobs`, `--only-status`, `--use-images-from`, `--repeats`, `--redo`, `--max-parallel`, `--timeout-s`, `--dry-run`
+   - Rich output: Panel with parameters, Table with summary (selected/processed/ok/error/skipped), skip reasons table
+   - Displays: generations CSV path, metrics artifacts path, metrics log path
+
+4. **VFScore Columns in SSOT** (`tables/generations.csv`):
+   - 15 new columns added (all nullable):
+     - **Core scores**: `vfscore_overall` (int 0-100), `vf_finish` (int), `vf_texture_identity` (int), `vf_texture_scale_placement` (int)
+     - **Statistics**: `vf_repeats_n` (int), `vf_iqr` (float), `vf_std` (float)
+     - **Provenance**: `vf_llm_model` (str), `vf_rubric_json` (str, compact JSON), `vf_config_hash` (str), `vf_rationales_dir` (str, workspace-relative path)
+     - **Performance**: `vf_render_runtime_s` (float), `vf_scoring_runtime_s` (float)
+     - **Status**: `vf_status` (enum: ok/error/skipped), `vf_error` (str, truncated 2000 chars)
+   - **Key columns**: `(run_id, job_id)` for upserts
+   - **Encoding**: UTF-8-SIG for Excel compatibility
+
+5. **Per-Job Artifacts** (`runs/<run_id>/metrics/vfscore/<job_id>/`):
+   - `result.json` — Canonical payload with all VFScore metrics:
+     ```json
+     {
+       "vfscore_overall_median": <int>,
+       "vf_subscores_median": {"finish": <int>, "texture_identity": <int>, "texture_scale_placement": <int>},
+       "repeats_n": <int>,
+       "scores_all": [<int>, ...],
+       "subscores_all": [{"finish": <int>, ...}, ...],
+       "iqr": <float>,
+       "std": <float>,
+       "llm_model": "<string>",
+       "rubric_weights": {"finish": <float>, "texture_identity": <float>, "texture_scale_placement": <float>},
+       "render_settings": {"engine": "cycles", "hdri": "<rel or alias>", "camera": "<preset>", "seed": <int>}
+     }
+     ```
+   - `config.json` — Effective VFScore configuration (render settings, rubric weights, LLM model, repeats)
+   - `renders/` — Standardized Cycles renders used for scoring (created by VFScore tool)
+   - `rationales/` — Text files with LLM explanations per scoring repeat (created by VFScore tool)
+
+6. **Eligibility Filtering** (`_is_eligible()`):
+   A job is eligible if ALL criteria are met:
+   - `run_id` matches
+   - `status` ∈ `--only-status` (default: `completed`)
+   - `gen_object_path` exists and is non-empty on disk
+   - At least 1 reference image exists on disk from chosen source (`used_image_*` or `source_image_*`)
+   - If `--jobs` provided, job_id matches (substring/glob/regex)
+   - If not `--redo`, skip rows with `vf_status="ok"` or non-null `vfscore_overall`
+   - Emits structured skip reasons: `wrong_run_id`, `status_not_in_filter`, `job_id_not_matching_filter`, `already_computed`, `missing_gen_object_path`, `gen_object_not_found_on_disk`, `no_reference_images_found`
+
+7. **Structured Logging** (`logs/metrics.log`):
+   - JSON-formatted event summary:
+     ```json
+     {
+       "event": "compute_vfscore",
+       "timestamp": "...",
+       "run_id": "...",
+       "n_selected": <int>,
+       "processed": <int>,
+       "ok": <int>,
+       "error": <int>,
+       "skipped": <int>,
+       "avg_render_runtime_s": <float>,
+       "avg_scoring_runtime_s": <float>,
+       "repeats": <int>,
+       "use_images_from": "used|source",
+       "redo": <bool>,
+       "max_parallel": <int>,
+       "dry_run": <bool>,
+       "skip_reasons": {...}
+     }
+     ```
+
+8. **Test Suite** (`tests/test_phase6_compute_vfscore.py`):
+   - 9 comprehensive tests covering all requirements:
+     1. Happy path dry-run (selection without evaluator calls)
+     2. Happy path real computation (full workflow with mock adapter)
+     3. Missing reference images (proper skip handling)
+     4. Idempotency without redo (skips already computed jobs)
+     5. Redo mode (force recomputation)
+     6. Concurrency (parallel processing with ThreadPoolExecutor)
+     7. Timeout handling (evaluator timeout → error status)
+     8. Image source selection (used_image_* vs source_image_* filtering)
+     9. Adapter error handling (non-timeout errors)
+   - All 9 tests passing
+   - Full test suite: **68/68 tests passing** (21+8+7+7+7+9+9 across Phases 0-6)
+
+**Key Features**:
+- **Dual Adapter Integration**: Tries Python import API first, falls back to CLI invocation
+- **Reference Image Flexibility**: Supports both `used_image_*` (default) and `source_image_*` columns via `--use-images-from` flag
+- **Idempotent by Default**: Skips jobs with `vf_status="ok"` unless `--redo` is set
+- **Atomic CSV Updates**: Uses Phase 0 `update_csv_atomic()` with FileLock for concurrent safety
+- **Parallel Execution**: ThreadPoolExecutor with configurable `--max-parallel` flag
+- **Flexible Filtering**: Job ID patterns (substring/glob/regex), status lists
+- **LLM Scoring Repeats**: Configurable `--repeats` for scoring consistency (default: 3)
+- **Timeout Support**: Per-job timeout with `--timeout-s` flag (useful for large models/slow rendering)
+- **Dry-Run Mode**: Preview eligible jobs without evaluator calls
+- **Comprehensive Artifacts**: result.json, config.json, renders, rationales all persisted per job
+- **Structured Logging**: JSON event summaries to `logs/metrics.log` with counters, runtimes, and skip reasons
+- **Graceful Error Handling**: Missing inputs or evaluator errors → `vf_status="error"` with descriptive `vf_error`
+
+**CLI Examples**:
+```bash
+# Basic usage (process completed jobs with reference images)
+archi3d compute vfscore --run-id "2025-10-20-experiment"
+
+# Dry-run to preview selection
+archi3d compute vfscore --run-id "test-run" --dry-run
+
+# Use source images instead of used images
+archi3d compute vfscore --run-id "test-run" --use-images-from source
+
+# Increase LLM repeats for more stable scores
+archi3d compute vfscore --run-id "test-run" --repeats 5
+
+# Parallel execution (renders + scoring are CPU/GPU intensive)
+archi3d compute vfscore --run-id "prod-run" --max-parallel 2
+
+# Recompute specific jobs matching a pattern
+archi3d compute vfscore --run-id "test-run" --jobs "product_123*" --redo
+
+# Custom timeout for slow renders
+archi3d compute vfscore --run-id "large-models" --timeout-s 600
+```
+
+**Design Patterns**:
+- **Adapter Abstraction**: Clean separation between orchestration and tool integration (mirrors Phase 5)
+- **Evidence-Based Eligibility**: Multi-criteria filtering with structured skip reasons
+- **Reference Image Discovery**: Dynamically extracts images from CSV columns based on `--use-images-from` parameter
+- **Canonical Payload Schema**: Normalized JSON schema for cross-tool compatibility
+- **Workspace-Relative Paths**: All artifact paths use POSIX format relative to workspace
+- **Directory Auto-Creation**: Output directories created automatically before writes
+- **Error Truncation**: Error messages capped at 2000 chars with full details in result.json
+- **Runtime Decomposition**: Separates render and scoring runtimes for performance analysis
+
+**Non-Functional Changes**:
+- No changes to Phases 0-5 functionality
+- All writes use Phase 0 atomic I/O utilities
+- Linting/formatting applied (ruff, black)
+- Added to `compute_app` Typer group (alongside `fscore` command)
+
+**Known Constraints**:
+- VFScore tool must be available via Python import or CLI (`python -m vfscore`)
+- Payload normalization assumes specific JSON schema from VFScore tool
+- Reference image columns must follow `{used|source}_image_{a-f}` naming convention
+- Job ID filtering uses simple patterns (substring, glob with `*`, or regex with `re:` prefix)
+- Status filtering uses simple string matching (not regex/glob)
+- Rubric weights stored as compact JSON string in CSV (parse required for analysis)
+- Error message truncation: 2000 characters (full error in result.json)
+- Concurrency is thread-based (not process-based)
+- Rendering and scoring are performed by external VFScore tool (not within archi3D)
+
+**Next Phase**: Final reporting enhancements, binary wheel packaging (FScore/VFScore distribution)

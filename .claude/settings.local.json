@@ -26,7 +26,9 @@
       "Bash(git add src/archi3d/orchestrator/consolidate.py tests/test_phase4_consolidate.py src/archi3d/cli.py CLAUDE.md readme.md .claude/settings.local.json)",
       "Bash(ruff check:*)",
       "Bash(black:*)",
-      "Bash(python -m pytest:*)"
+      "Bash(python -m pytest:*)",
+      "Bash(pytest:*)",
+      "Bash(tail:*)"
     ],
     "deny": [],
     "ask": []

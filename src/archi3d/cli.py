@@ -736,4 +736,127 @@ def compute_fscore_cmd(
     console.print(f"  Metrics log: {paths.metrics_log_path()}")
 
 
+# ---------------------------
+# compute vfscore (Phase 6)
+# ---------------------------
+
+
+@compute_app.command("vfscore")
+def compute_vfscore_cmd(
+    run_id: str = typer.Option(..., "--run-id", help="Run identifier (required)"),
+    jobs: str | None = typer.Option(None, "--jobs", help="Filter job_id by glob/regex/substring"),
+    only_status: str = typer.Option(
+        "completed",
+        "--only-status",
+        help="Comma-separated statuses to process (default: completed)",
+    ),
+    use_images_from: str = typer.Option(
+        "used",
+        "--use-images-from",
+        help="Reference image source: 'used' or 'source' (default: used)",
+    ),
+    repeats: int = typer.Option(
+        3, "--repeats", help="Number of LLM scoring repeats for consistency (default: 3)"
+    ),
+    redo: bool = typer.Option(
+        False, "--redo", help="Recompute even if metrics already present (default: false)"
+    ),
+    max_parallel: int = typer.Option(
+        1, "--max-parallel", help="Maximum parallel jobs (default: 1)"
+    ),
+    timeout_s: int | None = typer.Option(
+        None, "--timeout-s", help="Per-job timeout in seconds (optional)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview selection without running evaluator (default: false)"
+    ),
+):
+    """
+    Compute VFScore (visual fidelity metrics) for eligible jobs in a run.
+
+    Phase 6: Renders generated models under standardized Cycles setup and uses
+    LLM-based visual scoring to compare against reference photos. Upserts results
+    to tables/generations.csv and persists per-job artifacts.
+    """
+    _, paths = _load_runtime()
+
+    try:
+        from archi3d.metrics.vfscore import compute_vfscore
+    except Exception as e:  # noqa: BLE001
+        _fail(f"Missing module archi3d.metrics.vfscore (compute_vfscore). Import error: {e!r}")
+
+    # Validate use_images_from
+    if use_images_from not in ["used", "source"]:
+        _fail("--use-images-from must be 'used' or 'source'")
+
+    # Display execution info
+    panel_text = (
+        f"[bold]Compute VFScore (Phase 6)[/bold]\n"
+        f"Run: {run_id}\n"
+        f"Jobs filter: {jobs or '—'}\n"
+        f"Only status: {only_status}\n"
+        f"Use images from: {use_images_from}\n"
+        f"Repeats: {repeats}\n"
+        f"Redo: {redo}\n"
+        f"Timeout: {timeout_s or '—'}s\n"
+        f"Max parallel: {max_parallel}\n"
+        f"Dry-run: {dry_run}"
+    )
+    console.print(Panel.fit(panel_text))
+
+    try:
+        summary = compute_vfscore(
+            run_id=run_id,
+            jobs=jobs,
+            only_status=only_status,
+            use_images_from=use_images_from,
+            repeats=repeats,
+            redo=redo,
+            max_parallel=max_parallel,
+            timeout_s=timeout_s,
+            dry_run=dry_run,
+        )
+    except Exception as e:  # noqa: BLE001
+        import traceback
+
+        _fail(f"VFScore computation failed: {e}\n{traceback.format_exc()}")
+
+    # Display summary
+    if dry_run:
+        console.print("\n[yellow]Dry-run complete (no evaluator calls)[/yellow]")
+    else:
+        console.print("\n[green]VFScore computation complete![/green]")
+
+    summary_table = Table(title="VFScore Computation Summary")
+    summary_table.add_column("Metric", justify="left", style="cyan")
+    summary_table.add_column("Count", justify="right", style="magenta")
+
+    summary_table.add_row("Selected", str(summary.get("n_selected", 0)))
+    summary_table.add_row("Processed", str(summary.get("processed", 0)))
+    summary_table.add_row("[green]OK[/green]", str(summary.get("ok", 0)))
+    summary_table.add_row("[red]Error[/red]", str(summary.get("error", 0)))
+    summary_table.add_row("[yellow]Skipped[/yellow]", str(summary.get("skipped", 0)))
+
+    if summary.get("avg_render_runtime_s"):
+        summary_table.add_row("Avg render time", f"{summary['avg_render_runtime_s']:.2f}s")
+    if summary.get("avg_scoring_runtime_s"):
+        summary_table.add_row("Avg scoring time", f"{summary['avg_scoring_runtime_s']:.2f}s")
+
+    console.print(summary_table)
+
+    # Show skip reasons if any
+    skip_reasons = summary.get("skip_reasons", {})
+    if skip_reasons:
+        reasons_table = Table(title="Skip Reasons")
+        reasons_table.add_column("Reason", justify="left")
+        reasons_table.add_column("Count", justify="right")
+        for reason, count in skip_reasons.items():
+            reasons_table.add_row(reason, str(count))
+        console.print(reasons_table)
+
+    console.print(f"\n  Generations CSV: {paths.generations_csv_path()}")
+    console.print(f"  Metrics artifacts: {paths.runs_root / run_id / 'metrics' / 'vfscore'}")
+    console.print(f"  Metrics log: {paths.metrics_log_path()}")
+
+
 __all__ = ["app"]

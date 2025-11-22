@@ -10,7 +10,7 @@ This project provides a robust framework for benchmarking state-of-the-art Image
 2.  **Creating** batches of jobs based on specific algorithms and image selection policies.
 3.  **Executing** these jobs concurrently, preventing data corruption and conflicts.
 4.  **Consolidating** distributed results into a master dataset, ensuring SSOT consistency.
-5.  **Computing metrics** including geometry-based quality metrics (FScore) for evaluation.
+5.  **Computing metrics** including geometry-based quality metrics (FScore) and visual fidelity metrics (VFScore) for evaluation.
 6.  **Generating** reports for analysis.
 
 The entire system is built to work seamlessly over a shared network drive (like OneDrive or Google Drive), making collaboration easy and reliable.
@@ -326,6 +326,66 @@ archi3d compute fscore --run-id "initial-test-run" --timeout-s 300
 **Output Artifacts:**
 - Updated CSV: `tables/generations.csv` with FScore columns
 - Per-job details: `runs/<run_id>/metrics/fscore/<job_id>/result.json`
+- Structured log: `logs/metrics.log` with event summary
+
+**5b. Compute VFScore (Visual Fidelity Metrics) — Phase 6**
+
+After consolidation, compute visual fidelity metrics by rendering generated 3D models under standardized lighting and comparing them to reference photos using LLM-based visual scoring. This command evaluates appearance quality (finish, texture identity, texture scale/placement).
+
+```bash
+archi3d compute vfscore --run-id "initial-test-run"
+```
+
+**Key Features:**
+- Automatically selects eligible jobs (`status=completed`, generated object present, reference images available)
+- Renders models with standardized Cycles setup (fixed camera, HDRI, settings)
+- LLM-based visual scoring with configurable repeats for consistency
+- Supports both `used_image_*` (default) and `source_image_*` reference sets
+- Upserts 15 metric columns to `tables/generations.csv` (SSOT)
+- Persists detailed results to `runs/<run_id>/metrics/vfscore/<job_id>/` containing:
+  - `result.json`: Full VFScore metrics and statistics
+  - `config.json`: Effective configuration (render settings, rubric weights, LLM model)
+  - `renders/`: Standardized renders used for scoring
+  - `rationales/`: LLM explanations per scoring repeat
+- Idempotent by default: skips jobs already computed (use `--redo` to force recomputation)
+- Supports parallel execution with `--max-parallel` flag
+- Structured logging to `logs/metrics.log`
+
+**Common Options:**
+
+```bash
+# Dry-run to preview selection
+archi3d compute vfscore --run-id "initial-test-run" --dry-run
+
+# Use source images instead of used images
+archi3d compute vfscore --run-id "initial-test-run" --use-images-from source
+
+# Increase LLM repeats for more stable scores
+archi3d compute vfscore --run-id "initial-test-run" --repeats 5
+
+# Parallel execution (renders + scoring can be CPU/GPU intensive)
+archi3d compute vfscore --run-id "initial-test-run" --max-parallel 2
+
+# Recompute specific jobs matching a pattern
+archi3d compute vfscore --run-id "initial-test-run" --jobs "product_123*" --redo
+
+# Set per-job timeout
+archi3d compute vfscore --run-id "initial-test-run" --timeout-s 600
+```
+
+**Computed Metrics:**
+- **Core Scores**: `vfscore_overall` (0-100 median), `vf_finish`, `vf_texture_identity`, `vf_texture_scale_placement`
+- **Statistics**: `vf_repeats_n`, `vf_iqr` (interquartile range), `vf_std` (standard deviation)
+- **Provenance**: `vf_llm_model`, `vf_rubric_json` (compact JSON of weights), `vf_config_hash`, `vf_rationales_dir`
+- **Performance**: `vf_render_runtime_s`, `vf_scoring_runtime_s`
+- **Status**: `vf_status` (ok/error/skipped), `vf_error` (truncated to 2000 chars)
+
+**Output Artifacts:**
+- Updated CSV: `tables/generations.csv` with VFScore columns
+- Per-job details: `runs/<run_id>/metrics/vfscore/<job_id>/result.json`
+- Render artifacts: `runs/<run_id>/metrics/vfscore/<job_id>/renders/`
+- LLM rationales: `runs/<run_id>/metrics/vfscore/<job_id>/rationales/`
+- Configuration snapshot: `runs/<run_id>/metrics/vfscore/<job_id>/config.json`
 - Structured log: `logs/metrics.log` with event summary
 
 **6. Compute Additional Metrics (Legacy)**

@@ -54,6 +54,7 @@ pytest --cov=src/archi3d
 - Phase 3 tests: ✅ Complete (7 tests covering worker execution and lifecycle)
 - Phase 4 tests: ✅ Complete (7 tests covering SSOT consolidation and reconciliation)
 - Phase 5 tests: ✅ Complete (9 tests covering FScore computation and metrics upsert)
+- Phase 6 tests: ✅ Complete (9 tests covering VFScore computation and visual fidelity metrics)
 
 ### Dependency Management
 ```bash
@@ -72,12 +73,14 @@ archi3d batch create --run-id "test-run"                 # Create job queue
 archi3d run worker --run-id "test-run" --adapter "..." --max-parallel 2
 archi3d consolidate --run-id "test-run"                  # Reconcile SSOT with disk state
 archi3d compute fscore --run-id "test-run"               # Compute geometry metrics
+archi3d compute vfscore --run-id "test-run"              # Compute visual fidelity metrics
 archi3d metrics compute --run-id "test-run"              # Compute additional metrics
 archi3d report build --run-id "test-run"                 # Generate reports
 
 # Debug mode
 archi3d run worker --run-id "test-run" --adapter "..." --limit 1 --dry-run
 archi3d compute fscore --run-id "test-run" --dry-run     # Preview FScore computation
+archi3d compute vfscore --run-id "test-run" --dry-run    # Preview VFScore computation
 ```
 
 ## Architecture
@@ -209,6 +212,8 @@ src/archi3d/
 ├── metrics/            # Metrics computation
 │   ├── fscore.py       # FScore (geometry metrics) computation (Phase 5)
 │   ├── fscore_adapter.py  # FScore tool integration layer
+│   ├── vfscore.py      # VFScore (visual fidelity metrics) computation (Phase 6)
+│   ├── vfscore_adapter.py # VFScore tool integration layer
 │   └── compute.py      # Legacy metrics computation (placeholder)
 ├── reporting/          # Report generation (CSV/YAML summaries)
 ├── utils/              # Shared utilities
@@ -222,7 +227,8 @@ tests/
 ├── test_phase2_batch_create.py        # Phase 2: Batch creation tests (7 tests)
 ├── test_phase3_run_worker.py          # Phase 3: Worker execution tests (7 tests)
 ├── test_phase4_consolidate.py         # Phase 4: SSOT consolidation tests (7 tests)
-└── test_phase5_compute_fscore.py      # Phase 5: FScore computation tests (9 tests)
+├── test_phase5_compute_fscore.py      # Phase 5: FScore computation tests (9 tests)
+└── test_phase6_compute_vfscore.py     # Phase 6: VFScore computation tests (9 tests)
 ```
 
 ## Key Design Patterns
@@ -316,6 +322,74 @@ archi3d compute fscore --run-id "2025-10-20-exp" --redo --only-status "failed"
 
 # Preview before running
 archi3d compute fscore --run-id "2025-10-20-exp" --dry-run
+```
+
+### VFScore Metrics Computation (Phase 6)
+Phase 6 implements visual fidelity metrics via the `archi3d compute vfscore` command:
+
+**Key Components**:
+1. **VFScore Adapter Layer** (`metrics/vfscore_adapter.py`):
+   - Isolates external VFScore tool integration
+   - Resolution order: Python import API → CLI invocation fallback
+   - Normalizes output into canonical payload schema (overall score, subscores, LLM stats, render settings)
+   - Returns `VFScoreResponse` with success/error status
+
+2. **Main Computation Logic** (`metrics/vfscore.py`):
+   - Job eligibility filtering (status, generated object presence, reference images)
+   - Job ID filtering (substring/glob/regex patterns)
+   - Reference image selection (used_image_* or source_image_* columns)
+   - Parallel execution with ThreadPoolExecutor
+   - Per-job result artifacts: `runs/<run_id>/metrics/vfscore/<job_id>/` containing:
+     - `result.json`: Canonical payload with all VFScore metrics
+     - `config.json`: Effective VFScore config (render settings, rubric weights, LLM model)
+     - `renders/`: Standardized Cycles renders used for scoring
+     - `rationales/`: Text files with LLM explanations per repeat
+   - Atomic CSV upserts to `tables/generations.csv` with 15 new VFScore columns
+   - Structured logging to `logs/metrics.log`
+
+**VFScore Columns in SSOT** (Phase 6):
+- Core scores: `vfscore_overall`, `vf_finish`, `vf_texture_identity`, `vf_texture_scale_placement`
+- Stats: `vf_repeats_n`, `vf_iqr`, `vf_std`
+- Provenance: `vf_llm_model`, `vf_rubric_json` (compact JSON), `vf_config_hash`, `vf_rationales_dir`
+- Performance: `vf_render_runtime_s`, `vf_scoring_runtime_s`
+- Status: `vf_status` (ok/error/skipped), `vf_error`
+
+**CLI Flags**:
+- `--run-id`: Required, target run to process
+- `--jobs`: Optional job ID filter (glob/regex/substring)
+- `--only-status`: Comma-separated status filter (default: `completed`)
+- `--use-images-from`: Reference image source - `used` or `source` (default: `used`)
+- `--repeats`: Number of LLM scoring repeats for consistency (default: `3`)
+- `--redo`: Force recomputation of existing metrics (default: `false`)
+- `--max-parallel`: Thread pool size (default: `1`)
+- `--timeout-s`: Per-job timeout in seconds (optional)
+- `--dry-run`: Preview selection without evaluator calls
+
+**Idempotency & Safety**:
+- Without `--redo`, skips jobs with `vf_status="ok"` (prevents redundant computation)
+- Uses Phase 0 atomic I/O (`update_csv_atomic`) with FileLock for safe concurrent access
+- Creates output directories automatically before writing artifacts
+- Graceful error handling: missing inputs → `vf_status="error"` with descriptive `vf_error`
+
+**Typical Workflow**:
+```bash
+# After worker completion and consolidation
+archi3d compute vfscore --run-id "2025-10-20-exp"    # Compute visual fidelity metrics
+
+# Use source images instead of used images
+archi3d compute vfscore --run-id "2025-10-20-exp" --use-images-from source
+
+# Increase LLM repeats for more stable scores
+archi3d compute vfscore --run-id "2025-10-20-exp" --repeats 5
+
+# Parallel processing for faster computation
+archi3d compute vfscore --run-id "2025-10-20-exp" --max-parallel 3
+
+# Recompute specific jobs
+archi3d compute vfscore --run-id "2025-10-20-exp" --redo --jobs "job_abc*"
+
+# Preview before running
+archi3d compute vfscore --run-id "2025-10-20-exp" --dry-run
 ```
 
 ## Important Constraints

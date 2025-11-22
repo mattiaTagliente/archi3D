@@ -1,285 +1,95 @@
-## Role
+## Phase 7 • Interactive HTML report with VFScore+F-Score and 3-level categories
 
-Implement **Phase 7 — Reports & Quality Gate**. Add a robust `archi3d report` command set that:
+### Goal
 
-1. **Builds per-run analytical reports** from the SSOT (`tables/generations.csv`, optionally joined with `tables/items.csv`).
-2. **Evaluates quality gates** against configured thresholds and emits clear pass/fail summaries.
-3. **Exports artifacts** (Markdown/HTML report + tidy CSVs) under `reports/`, and **appends structured logs**.
+Generate a self-contained **interactive `report.html`** for each run that reproduces the four Archiproducts visualizations conceptually, using **VFScore∈[0,1]** and **F-Score∈[0,1]** with default thresholds **0.65/0.65**, and offering **analysis at category levels L1, L2, and L3**. The page must work offline and allow export of images and filtered CSV.
 
-**Do not** change prior phases’ behavior. Treat Phases 0–6 as done and available.
+### Inputs
 
----
+Read only the SSOT CSV from prior phases (same file already used in Phase-6): `tables/generations.csv`. Required columns (robust aliasing allowed):
 
-## Objectives
+* identifiers: `run_id`, `job_id`, optional `product_id`, `variant_id`
+* algo: `algo`
+* categories: `category_l1`, `category_l2`, `category_l3`
+* images used: `used_n_images` (fallbacks: `n_images`, `images_used`)
+* metrics: `fscore`, `fscore_status`, `vfscore`, `vf_status`
+  Rows are **plot-eligible** only if the metric’s `*_status=="ok"`.
 
-1. Provide a **per-run report** summarizing:
+### Business rules
 
-   * Job counts & statuses (completed/failed/skipped).
-   * **FScore** metrics (fscore, precision, recall, chamfer, distance stats). 
-   * **VFScore** metrics (overall + subscores, dispersion across repeats). 
-   * Time/cost aggregates (duration, cost fields if present). 
-2. Implement a **Quality Gate**:
+* **Acceptance gate** per item: `(vfscore ≥ vf_min) AND (fscore ≥ f_min)`. Defaults: `vf_min=0.65`, `f_min=0.65`. Both thresholds are user-adjustable.
+* **N-images domain** is dynamic: use all distinct values present in the run. Support 1..6 without code changes.
+* Do not mutate SSOT. All outputs live under `reports/run_<run_id>/`.
 
-   * Use thresholds from config (Phase-0/Schema), e.g., `fscore_min` (required) and optional visual gate if present; compute **per-job pass/fail** and **run-level pass rate**. 
-3. Export **report files** to `reports/run_<run_id>/`:
+### Deliverables
 
-   * `report.md` (always), plus optional `report.html`.
-   * `tables/*.csv` (normalized extracts ready for BI).
-4. Write a **structured summary record** to `logs/metrics.log` (event: `"report_run"`), reusing Phase-0 atomic log utilities. 
-
-**Non-Goals:** No (re)execution of jobs, no consolidation logic, no metric recomputation. (Those are Phases 3–6.)
-
----
-
-## Repository Pointers (where to work)
-
-* **CLI**: extend `src/archi3d/cli.py` with `report` subcommands. (Follow CLI patterns used by earlier phases.) 
-* **New**: `src/archi3d/reporting/report_run.py` — core analytics/quality gate & export.
-* **Reuse**: Phase-0 path + I/O utilities (`PathResolver`, `update_csv_atomic`, `append_log_record`, `write_text_atomic`). **Do not** reimplement atomic I/O. 
-
----
-
-## Functional Requirements
-
-### A) CLI
-
-Add a top-level `report` group with subcommand:
+1. **CLI**: `archi3d report run --run-id <id> --format html [--open] [--vf-min 0.65] [--f-min 0.65]`
+   Outputs:
 
 ```
-archi3d report run
-  --run-id <string>                 (required)
-  [--format <md|html|both>]         (default: md)
-  [--include <glob-or-regex>]       (filter on product_id|variant|product_name)
-  [--exclude <glob-or-regex>]
-  [--only-status <csv-list>]        (default: completed,failed,skipped)
-  [--quality-gate]                  (default: true)
-  [--export-csv]                    (default: true)
-  [--open]                          (default: false; attempt to open report)
-  [--dry-run]                       (default: false; compute but do not write)
+reports/run_<id>/
+  report.html                  # single-page app, offline
+  report_data.json             # or embedded JSON
+  acceptance_counts.csv        # summarized under default thresholds
+  assets/                      # vendored JS/CSS/fonts
 ```
 
-* Keep console succinct; detailed content goes to exported files and the log entry—same style as Phases 2/5/6 summaries.
+2. **Controls panel (runtime)**
 
-### B) Inputs
+* Multi-select: algorithms; categories at **currently selected level**.
+* Selector for category level: **L1 / L2 / L3**. When level=**L2** or **L3**, show **badge legends** for upper levels. When level=**L3**, show badges for both L1 and L2. Order categories by `(L1, L2, name)` to keep hierarchy intelligible. 
+* N-images selector: buttons or range covering all values present.
+* Numeric inputs or sliders for `vf_min`, `f_min` with live updates.
+* Toggle for showing the **acceptance region** on scatter plots.
+* “Download filtered CSV” for the current subset.
 
-* **SSOT**: `tables/generations.csv` (Phase-2+). 
-* Optional join with `tables/items.csv` (Phase-1) for parent fields if needed. 
-* **Workspace**: use `PathResolver` to resolve `reports_root`, `metrics_log_path()`, and relative path normalization. 
+3. **Four visualization sections**
+   All sections must react instantly to filters, level changes, and thresholds; legends must reflect only visible algos; empty states show a neutral placeholder.
 
-### C) Selection
+A) **Scatter by category × N-images**
+For each selected category (at the chosen level) and each selected N, plot `x=vfscore`, `y=fscore`, color by `algo`. Draw threshold guide lines at `vf_min` and `f_min` and an optional shaded top-right acceptance rectangle. Show `accepted/total` for each panel. Export each panel as PNG.
+(Concept: same acceptance guides seen in the mockups; interactivity per this report.)
 
-A row is considered if:
+B) **Distribution of VFScore by category × algo, split by N-images**
+One figure per N; category on x; grouped by algo. A horizontal reference at `vf_min`. **Box-plot definition = Tukey**: Q1–Q3 box, median line, whiskers to last data within Q±1.5·IQR, caps, outliers as points. Provide **hover tooltips** reporting `n, min, Q1, median, Q3, max, IQR, lower/upper fence, outliers count`. Include **“How to read a box plot (Tukey)”** explainer panel. 
 
-1. `run_id` matches.
-2. `status` ∈ `--only-status` (default: `completed,failed,skipped`).
-3. If `--include`/`--exclude` provided, filter by **contains/regex/glob** on `product_id|variant|product_name` (same semantics as Phase-2 filters). 
+C) **Distribution of F-Score by category × algo, split by N-images**
+Same as (B) but for `fscore` and reference at `f_min`. Keep the same Tukey stats, tooltips, legends, category ordering, and **upper-level badges** when viewing L2/L3. 
 
-### D) Analytics
+D) **“Optimal number of images” per (algo, category)**
+For each `(algo, category_at_selected_level)` aggregate by N: plot points at `(mean_vf, mean_f)` annotated with `N`. Show uncertainty as standard error or 95% CI (pick one and state it in the page). Keep threshold guides and acceptance rectangle visible to help select N. Panels appear only when at least two distinct N values exist.
 
-Compute, at minimum:
+4. **Explanatory blocks and UX**
 
-1. **Volume & status**
+* Two compact callouts: **Box-plot reading** and **Interpretation** (high box=better, narrow=low variance, line at 0.65 indicates acceptance). 
+* Badges for upper category levels (L1 and optionally L2) under each category label, including a small `n=` count per category (average per-algo item count as in the app). 
+* Buttons to **export current chart to PNG**. Export must render with title and legends. 
+* Light/dark theme that prints cleanly to PDF.
 
-   * Totals by status; failures with top-N error reasons (from `error_msg`). (Phases 3/4 wrote these fields.)
+5. **Summaries**
 
-2. **Geometry (FScore)**
+* `acceptance_counts.csv`: for each `(selected_category_level_value, N, algo)` write `total` and `accepted` under **default** thresholds.
+* Small summary cards on the page: number of algos, categories at the chosen level, test count for the selected N, and total dataset size. 
 
-   * Distribution: mean/median/p95 of `fscore`, plus `precision/recall/chamfer_l2`.
-   * Distance stats if available (`fscore_dist_*`).
-   * Count of jobs with `fscore_status="ok"` vs `"error"`. 
+### Architecture constraints
 
-3. **Visual (VFScore)**
+* Keep Phase-7 changes **additive**. Do not change earlier phase schemas or semantics.
+* The HTML must render offline (`file://`) and from a static server. No remote CDNs.
+* Library choice is open (Plotly, ECharts, Vega, D3, etc.). Prioritize clarity and performance over bundle size.
+* Centralize filtering and threshold logic so all views stay consistent.
 
-   * Overall distribution (median, IQR, std) of `vfscore_overall`.
-   * Per-dimension medians: `vf_finish`, `vf_texture_identity`, `vf_texture_scale_placement`.
-   * Count of jobs with `vf_status="ok"` vs `"error"`. 
+### Testing and acceptance
 
-4. **Performance & cost**
+* With a run containing multiple algos, categories across **all three levels**, and N in {1..5}, `archi3d report run --run-id <id> --format html` must:
 
-   * Totals/averages for `generation_duration_s`.
-   * Sum/avg of `estimated_cost_usd` if present. 
+  * Open offline and show the four sections.
+  * Let the user switch **L1/L2/L3** and see: hierarchy-aware ordering, upper-level **badges**, and per-category sample `n` counts exactly as defined above. 
+  * Update plots, legends, acceptance overlays, and the `accepted/total` counters when filters or thresholds change.
+  * Export each chart to PNG with titles and legends.
+  * Export the filtered subset to CSV.
+  * Print to PDF legibly.
 
-5. **Category cuts**
+### Non-goals
 
-   * Grouped aggregates by `manufacturer`, `category_l1`, and `algo` (mean fscore, mean vfscore, counts). (Fields originate in Phase-1 and Phase-2.)
-
-### E) Quality Gate
-
-* **Config:** Read thresholds from the existing config model (Phase-0 schema). At minimum, **require `fscore_min`**. If `vfscore_overall` threshold exists in config, apply it; otherwise, treat VF as descriptive only. 
-* **Per-job gate:**
-  `job_pass = (fscore >= fscore_min) AND (optional: vfscore_overall >= vfscore_min)`
-  Mark missing metrics as **fail** for that metric; if a metric is globally disabled (no threshold), ignore it in gate.
-* **Run-level gate:**
-  Compute **pass rate** = `% jobs with job_pass==true` over the **eligible** set (`status=completed` with required metrics present). Report both:
-
-  * “of completed jobs” pass rate
-  * “of all selected jobs” pass rate (treat missing metrics as fail).
-* Emit a clear **PASS/FAIL** summary with the concrete threshold values used and counts.
-
-### F) Outputs (per run)
-
-Under `reports/run_<run_id>/`:
-
-* `report.md` (always):
-
-  * Title, timestamp, filters used.
-  * Status histogram table.
-  * FScore section (tables + brief commentary).
-  * VFScore section (tables + dispersion lines).
-  * Category/Algo pivots (compact tables).
-  * **Quality Gate** section with explicit thresholds and final decision.
-  * Pointers to the CSVs below.
-* If `--format html|both`: render a simple HTML from the same content (Markdown → HTML); **no JS deps** required.
-* `tables/` CSV extracts (workspace-relative paths only):
-
-  * `jobs_selected.csv` — the exact rows (and subset of columns) used for the report.
-  * `agg_by_algo.csv`, `agg_by_category_l1.csv`, `agg_by_manufacturer.csv`.
-  * `gate_by_job.csv` — `(run_id, job_id, product_id, variant, algo, fscore, vfscore_overall, job_pass, reasons_if_fail)`.
-
-If `--dry-run`, **do not write** files; still compute and print a short preview to console and write the log record with `"dry_run": true`.
-
-### G) Logging (structured)
-
-Append a JSON record to `logs/metrics.log` (Phase-0 utility) with at least:
-
-```json
-{
-  "event": "report_run",
-  "timestamp": "...",
-  "run_id": "...",
-  "selected": <int>,
-  "completed": <int>,
-  "failed": <int>,
-  "skipped": <int>,
-  "fscore_ok": <int>,
-  "vfscore_ok": <int>,
-  "gate_enabled": true,
-  "gate_thresholds": { "fscore_min": <float>, "vfscore_min": <float|null> },
-  "gate_pass_rate_completed": <float>,
-  "gate_pass_rate_all": <float>,
-  "export_dir": "reports/run_<run_id>/",
-  "format": "md|html|both",
-  "export_csv": true,
-  "dry_run": false
-}
-```
-
-Use the same append semantics as Phases 2/5/6.
-
-### H) Paths, Encoding, Safety
-
-* All paths written in CSVs must be **workspace-relative** and UTF-8-SIG encoded (Phase-0).
-* Use Phase-0 atomic write utilities for files (no partials). 
-
----
-
-## Acceptance Criteria (Definition of Done)
-
-1. **CLI**
-   `archi3d report run --run-id <id>` generates `reports/run_<id>/report.md` and `tables/*.csv` by default, honors filters, and supports `--format`, `--dry-run`, `--open`.
-
-2. **Quality Gate**
-
-   * Applies `fscore_min` (required), and optional `vfscore_min` if present in config.
-   * Produces per-job pass/fail and run-level pass rates with explicit numbers and thresholds.
-
-3. **Analytics**
-
-   * Status histogram correct; FScore & VFScore aggregates computed; category/algo pivots present.
-   * All calculations derive **exclusively** from `tables/generations.csv` (+ optional join to `items.csv`).
-
-4. **Exports**
-
-   * Markdown (and optional HTML) report written under `reports/run_<run_id>/`.
-   * CSV extracts present and consistent with the report.
-   * All CSVs use workspace-relative paths and UTF-8-SIG.
-
-5. **Logging**
-
-   * A structured `report_run` JSON line is appended to `logs/metrics.log` with accurate counters.
-
-6. **Idempotency**
-
-   * Re-running (same inputs) overwrites the same report files atomically; summaries remain consistent.
-
----
-
-## Minimal Tests / Self-Tests
-
-Create `tests/test_phase7_report.py` or `scripts/dev/phase7_selftest.py`:
-
-**Test 1 — Happy path**
-
-* Workspace with a run containing mixed `completed/failed` jobs and populated FScore & VFScore fields.
-* Run: `archi3d report run --run-id <id>`
-* Assert: report files exist; CSV extracts match selected rows; log line appended; gate computed.
-
-**Test 2 — Dry run**
-
-* Same inputs with `--dry-run`.
-* Assert: no files under `reports/`; console shows preview; log `"dry_run": true`.
-
-**Test 3 — Filters**
-
-* Use `--include` / `--exclude` to restrict to a subset; verify counts & CSVs reflect filtering.
-
-**Test 4 — Gate with missing visuals**
-
-* Remove VFScore columns; ensure gate uses only `fscore_min` and still produces decision.
-
-**Test 5 — Path & encoding**
-
-* Open a produced CSV and verify **no absolute paths**; encoding is UTF-8-SIG.
-
----
-
-## Deliverables
-
-* **New**:
-
-  * `src/archi3d/reporting/report_run.py`
-* **Modified**:
-
-  * `src/archi3d/cli.py` (register/wire `report run`)
-* **Optional**:
-
-  * `tests/test_phase7_report.py` or `scripts/dev/phase7_selftest.py`
-* **CHANGELOG**:
-  `feat(phase7): add per-run reporting with quality gate, Markdown/HTML exports, and structured logging; reuses SSOT and atomic I/O.`
-
----
-
-## Implementation Notes
-
-* Use `PathResolver.reports_root` and `metrics_log_path()` from Phase-0; create `reports/run_<run_id>/` with `mkdir(parents=True, exist_ok=True)`. 
-* For Markdown: build with string templates; for HTML: a trivial Markdown→HTML conversion (no heavy deps).
-* Ensure **no mutation** of `tables/generations.csv` here.
-* Keep column names exactly as defined in Phases 2, 5, 6 (`fscore_*`, `vf*`, duration/cost fields).
-* Summaries should be deterministic; sort groups by count desc or name asc for stability.
-
----
-
-By completing **Phase 7** per this spec, the project delivers **auditable, portable reports** driven solely by the **Single Source of Truth** and applies a transparent **Quality Gate** aligned with configured thresholds—cleanly building on Phases 0–6 without altering their behavior.
-
----
-## 📝 IMPORTANT: Update Documentation
-
-**After completing this phase, you MUST update the project documentation:**
-
-1. Update `claude.md` (the agent's memory file) with:
-   - New functionality added in this phase
-   - Usage examples and patterns
-   - Any new constraints or design patterns
-   - Update the "Implementation Status" section with phase completion details
-
-2. Update `readme.md` (the project's main documentation) with:
-   - A summary of the new features.
-   - Any changes to the project's usage or setup.
-
-3. Keep documentation comprehensive and consolidated (avoid creating many small files)
-
-4. The user prefers documentation that retains all information in a few comprehensive files
-
-**This is a critical step - do not consider the phase complete until documentation is updated!**
-
----
+* No prescriptive Python plotting. The agent is free to design visuals, provided the semantics above hold.
+* No changes to how metrics are computed or scaled.

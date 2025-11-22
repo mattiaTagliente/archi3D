@@ -155,7 +155,7 @@ This matches the **CLI fallback** archi3D will use if import fails.
 * **`score.py`** should implement:
 
   * a loop of `repeats` scoring passes,
-  * per-repeat **overall** and **per-dimension** subscores `{finish, texture_identity, texture_scale_placement}` in **0–100**,
+  * per-repeat **overall** and **per-dimension** subscores `{finish, texture_identity, texture_scale_placement}` in **0.00–1.00**,
   * rationale text per repeat saved under `rationales/NN.txt`,
   * `llm_model` and `rubric_weights` in the payload. (If no LLM is available, include a deterministic stub scorer; keep the same fields with plausible values. The archi3D side treats VFScore as optional, and reports will still render properly. )
 * **`aggregate.py`** computes median of overall and each subscore; also `iqr` and `std`; assemble the canonical JSON object exactly as specified. 
@@ -217,19 +217,21 @@ By implementing the above in VFScore, you will provide a **Phase-7c-ready** modu
 
 **After completing this phase, you MUST update the project documentation:**
 
-1. Update `claude.md` (the agent's memory file) with:
+1. Update `claude.md` (the agent's memory file) with the new relevant information
+
+2. Update `changelog.md` with:
    - New functionality added in this phase
    - Usage examples and patterns
    - Any new constraints or design patterns
-   - Update the "Implementation Status" section with phase completion details
+   - phase completion details
 
-2. Update `readme.md` (the project's main documentation) with:
+3. Update `readme.md` (the project's main documentation) with:
    - A summary of the new features.
    - Any changes to the project's usage or setup.
 
-3. Keep documentation comprehensive and consolidated (avoid creating many small files)
+4. Keep documentation comprehensive and consolidated (avoid creating many small files)
 
-4. The user prefers documentation that retains all information in a few comprehensive files
+5. The user prefers documentation that retains all information in a few comprehensive files
 
 **This is a critical step - do not consider the phase complete until documentation is updated!**
 
