@@ -187,11 +187,14 @@ archi3d batch create
 
 # Explicit run_id and algorithms
 archi3d batch create --run-id "2025-10-20-experiment" --algos tripo3d_v2p5,trellis_single
+
+# Ecotest mode: auto-select algorithms based on item's image count
+archi3d batch create --run-id "2025-10-20-ecotest" --algos ecotest
 ```
 
 **Common Options:**
   * `--run-id`: Give your experiment a unique name (auto-generated UTC timestamp if omitted)
-  * `--algos`: Comma-separated algorithm keys (uses first configured algorithm if omitted)
+  * `--algos`: Comma-separated algorithm keys, or `ecotest` for automatic selection by n_images
   * `--limit`: Process only first N items (useful for testing)
   * `--include`: Filter to include only matching products (substring match on product_id/variant/product_name)
   * `--exclude`: Filter to exclude matching products
@@ -211,6 +214,9 @@ archi3d batch create --run-id "product-335888" --include "335888" --algos tripo3
 
 # Dry-run to preview
 archi3d batch create --run-id "preview" --algos tripo3d_v2p5 --dry-run
+
+# Ecotest mode: single-image algos for 1-image items, multi-image algos for 2+ image items
+archi3d batch create --run-id "ecotest-run" --algos ecotest
 ```
 
 **Key Features:**
@@ -218,6 +224,7 @@ archi3d batch create --run-id "preview" --algos tripo3d_v2p5 --dry-run
 - **SSOT Registry**: All jobs tracked in `tables/generations.csv` with full observability
 - **Atomic operations**: Safe for concurrent access via file locking
 - **Flexible filtering**: Include/exclude patterns, GT-only mode, item limits
+- **Ecotest mode**: Automatic algorithm selection based on image count for efficient resource usage
 
 **3. Run a Worker to Process Jobs (Phase 3)**
 

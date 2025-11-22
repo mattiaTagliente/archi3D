@@ -14,6 +14,7 @@ from typing import Optional
 
 import pandas as pd
 
+from archi3d.config.adapters_cfg import get_adapter_image_mode
 from archi3d.config.paths import PathResolver
 from archi3d.db.generations import compute_image_set_hash, compute_job_id, upsert_generations
 from archi3d.utils.io import append_log_record
@@ -55,6 +56,42 @@ def _select_images_use_up_to_6(row: pd.Series) -> tuple[list[str], str]:
         pass
 
     return selected, ""
+
+
+# -------------------------------
+# Algorithm Selection
+# -------------------------------
+
+def _select_algos_for_item(
+    n_images: int,
+    single_algos: list[str],
+    multi_algos: list[str],
+    algo_by_images: bool,
+) -> list[str]:
+    """
+    Select which algorithms to use for an item based on its image count.
+
+    Args:
+        n_images: Number of images the item has.
+        single_algos: List of single-image algorithm keys.
+        multi_algos: List of multi-image algorithm keys.
+        algo_by_images: If True, select algos based on n_images (ecotest mode).
+                        If False, return all algorithms.
+
+    Returns:
+        List of algorithm keys to use for this item.
+    """
+    if not algo_by_images:
+        # Normal mode: use all provided algos
+        return single_algos + multi_algos
+
+    # Ecotest mode: select based on n_images
+    if n_images == 1:
+        return single_algos
+    elif n_images > 1:
+        return multi_algos
+    else:
+        return []  # No images, skip
 
 
 # -------------------------------
@@ -133,6 +170,7 @@ def create_batch(
     exclude: Optional[str] = None,
     with_gt_only: bool = False,
     dry_run: bool = False,
+    algo_by_images: bool = False,
 ) -> dict:
     """
     Create a batch of jobs for the given run_id and algorithms.
@@ -151,6 +189,9 @@ def create_batch(
         exclude: Exclude filter pattern.
         with_gt_only: If True, skip items without GT object.
         dry_run: If True, don't write files, only compute summary.
+        algo_by_images: If True (ecotest mode), select algorithms based on n_images:
+                        single-image algos for items with 1 image,
+                        multi-image algos for items with 2+ images.
 
     Returns:
         Summary dict with counts and skip reasons.
@@ -195,43 +236,58 @@ def create_batch(
     generation_records = []
     skip_reasons: dict[str, int] = {}
 
-    for algo in algos:
-        for _, row in filtered_df.iterrows():
-            # Extract parent fields
-            product_id = str(row["product_id"]).strip()
-            variant = str(row["variant"]).strip()
-            manufacturer = str(row["manufacturer"]).strip()
-            product_name = str(row["product_name"]).strip()
-            category_l1 = str(row["category_l1"]).strip()
-            category_l2 = str(row["category_l2"]).strip()
-            category_l3 = str(row["category_l3"]).strip()
-            description = str(row["description"]).strip()
-            source_n_images = int(row["n_images"])
-            gt_object_path = str(row["gt_object_path"]).strip()
+    # Partition algorithms by image mode for ecotest
+    single_algos = [a for a in algos if get_adapter_image_mode(a) == "single"]
+    multi_algos = [a for a in algos if get_adapter_image_mode(a) == "multi"]
 
-            # Collect source images
-            source_images = []
-            for i in range(1, 7):
-                path = str(row.get(f"image_{i}_path", "")).strip()
-                if path:
-                    source_images.append(path)
+    for _, row in filtered_df.iterrows():
+        # Extract parent fields
+        product_id = str(row["product_id"]).strip()
+        variant = str(row["variant"]).strip()
+        manufacturer = str(row["manufacturer"]).strip()
+        product_name = str(row["product_name"]).strip()
+        category_l1 = str(row["category_l1"]).strip()
+        category_l2 = str(row["category_l2"]).strip()
+        category_l3 = str(row["category_l3"]).strip()
+        description = str(row["description"]).strip()
+        source_n_images = int(row["n_images"])
+        gt_object_path = str(row["gt_object_path"]).strip()
 
-            # Apply image selection policy
-            used_images, skip_reason = _select_images_use_up_to_6(row)
+        # Collect source images
+        source_images = []
+        for i in range(1, 7):
+            path = str(row.get(f"image_{i}_path", "")).strip()
+            if path:
+                source_images.append(path)
 
-            if skip_reason:
-                skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
-                continue
+        # Apply image selection policy
+        used_images, skip_reason = _select_images_use_up_to_6(row)
 
-            # Compute job identity
-            image_set_hash = compute_image_set_hash(used_images)
+        if skip_reason:
+            skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
+            continue
+
+        # Compute common fields
+        image_set_hash = compute_image_set_hash(used_images)
+        used_images_padded = used_images + [""] * (6 - len(used_images))
+        source_images_padded = source_images + [""] * (6 - len(source_images))
+
+        # Select algorithms for this item based on ecotest mode
+        item_algos = _select_algos_for_item(
+            n_images=source_n_images,
+            single_algos=single_algos,
+            multi_algos=multi_algos,
+            algo_by_images=algo_by_images,
+        )
+
+        if not item_algos:
+            skip_reasons["no_matching_algo"] = (
+                skip_reasons.get("no_matching_algo", 0) + 1
+            )
+            continue
+
+        for algo in item_algos:
             job_id = compute_job_id(product_id, variant, algo, image_set_hash)
-
-            # Pad used images to 6 paths
-            used_images_padded = used_images + [""] * (6 - len(used_images))
-
-            # Pad source images to 6 paths
-            source_images_padded = source_images + [""] * (6 - len(source_images))
 
             # Create generation record
             record = {
@@ -284,6 +340,9 @@ def create_batch(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id,
         "algos": algos,
+        "algo_by_images": algo_by_images,
+        "single_algos": single_algos,
+        "multi_algos": multi_algos,
         "image_policy": image_policy,
         "candidates": candidates,
         "enqueued": enqueued,

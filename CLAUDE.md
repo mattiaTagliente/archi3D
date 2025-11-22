@@ -75,6 +75,7 @@ uv sync
 # Basic workflow (from project root)
 archi3d catalog build                                    # Scan dataset, build items.csv
 archi3d batch create --run-id "test-run"                 # Create job queue
+archi3d batch create --run-id "test-run" --algos ecotest # Ecotest: auto-select algos by n_images
 archi3d run worker --run-id "test-run" --adapter "..." --max-parallel 2
 archi3d consolidate --run-id "test-run"                  # Reconcile SSOT with disk state
 archi3d compute fscore --run-id "test-run"               # Compute geometry metrics
@@ -140,6 +141,10 @@ The `REGISTRY` dict (`archi3d.adapters.registry`) maps algorithm keys (e.g., `"t
   - Generates deterministic `job_id` via SHA1 hash of (algo|product|variant|images)
   - Writes `.todo.json` tokens to `runs/<run_id>/queue/`
   - Skips jobs already in `results.parquet` with `status=completed` for the same `run_id`
+  - **Ecotest Mode** (`--algos ecotest`): Automatically selects algorithms based on item's n_images:
+    - Items with 1 image: assigned only to single-image algorithms (`image_mode: "single"`)
+    - Items with 2+ images: assigned only to multi-image algorithms (`image_mode: "multi"`)
+    - This economical approach avoids wasting resources by not running multi-image algos on single-image items
 
 - **Worker Execution** (`orchestrator.worker.run_worker`):
   - Claims tokens by atomically renaming `.todo.json` → `.inprogress.<worker_id>.json`

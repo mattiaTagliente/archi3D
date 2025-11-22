@@ -1,7 +1,9 @@
 # archi3d/config/adapters.yaml
+# image_mode: "single" = accepts 1 image, "multi" = accepts 2+ images
 adapters:
   trellis_multi_stochastic:
     endpoint: "fal-ai/trellis/multi"
+    image_mode: "multi"
     unit_price_usd: 0.02
     price_source: "fal.ai 2025-08 list"
     defaults:
@@ -10,6 +12,7 @@ adapters:
       # seed omitted => provider default
   trellis_multi_multidiffusion:
     endpoint: "fal-ai/trellis/multi"
+    image_mode: "multi"
     unit_price_usd: 0.02
     price_source: "fal.ai 2025-08 list"
     defaults:
@@ -18,58 +21,66 @@ adapters:
       # seed omitted => provider defaults
   tripo3d_v2p5_multi:
     endpoint: "tripo3d/tripo/v2.5/multiview-to-3d"
+    image_mode: "multi"
     unit_price_usd: 0.40
     price_source: "fal.ai 2025-08 list"
     defaults:
-      pbr: true          
-      texture: "HD"      
+      pbr: true
+      texture: "HD"
       # all other options left to provider defaults
   rodin_multi:
     endpoint: "fal-ai/hyper3d/rodin"
+    image_mode: "multi"
     unit_price_usd: 0.40
     price_source: "fal.ai 2025-08 list"
     defaults:
       condition_mode: "concat"
       material: "PBR"
       quality: "high"
-      use_hyper: true   
+      use_hyper: true
   hunyuan3d_v2_multi:
     endpoint: "fal-ai/hunyuan3d/v2/multi-view"
+    image_mode: "multi"
     unit_price_usd: 0.051
     price_source: "fal.ai 2025-08 list"
     defaults:
-      textured_mesh: true     
+      textured_mesh: true
       # seed omitted -> provider default
       # other params left at model defaults
   trellis_single:
     endpoint: "fal-ai/trellis"
+    image_mode: "single"
     unit_price_usd: 0.02
-    price_source: "fal.ai price sheet — 2025-08-18"
+    price_source: "fal.ai price sheet - 2025-08-18"
     defaults:
       texture_size: 2048  # keep other parameters at provider defaults
   tripo3d_v2p5_single:
     endpoint: "tripo3d/tripo/v2.5/image-to-3d"  # per API docs
+    image_mode: "single"
     unit_price_usd: 0.40
-    price_source: "fal.ai price sheet — 2025-08-18"
+    price_source: "fal.ai price sheet - 2025-08-18"
     defaults:
       pbr: true
       texture: "HD"  # HD textures requested; other params left to provider defaults
   tripoSR_single:
     endpoint: "fal-ai/triposr"  # Queue endpoint id; HTTP base is https://fal.run/fal-ai/triposr
+    image_mode: "single"
     unit_price_usd: 0.07
-    price_source: "fal.ai price sheet — 2025-08-18"
+    price_source: "fal.ai price sheet - 2025-08-18"
     defaults: {}  # all parameters at provider defaults
   hunyuan3d_v2_single:
     endpoint: "fal-ai/hunyuan3d/v2"
-    unit_price_usd: 0.48           # NB: textured_mesh=True implies 3× price vs white mesh
-    price_source: "fal.ai price sheet — 2025-08-18"
+    image_mode: "single"
+    unit_price_usd: 0.48           # NB: textured_mesh=True implies 3x price vs white mesh
+    price_source: "fal.ai price sheet - 2025-08-18"
     defaults:
       textured_mesh: true          # enable textured mesh as requested
       # other parameters left at provider defaults (e.g., num_inference_steps=50, guidance_scale=7.5, octree_resolution=256)
   hunyuan3d_v2p1_single:
     endpoint: "fal-ai/hunyuan3d-v21"
+    image_mode: "single"
     unit_price_usd: 0.90
-    price_source: "fal.ai price sheet — 2025-08-18"
+    price_source: "fal.ai price sheet - 2025-08-18"
     defaults:
       textured_mesh: true   # enable textured mesh as requested
       # other parameters left at provider defaults:
