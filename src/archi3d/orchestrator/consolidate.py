@@ -273,41 +273,49 @@ def _reconcile_row(
         reconciled["status"] = desired_status
         changes["status_changed"] = True
 
-    # Fill timestamps if missing (best effort from markers/artifacts)
-    if pd.isna(row.get("generation_start")) or not row.get("generation_start"):
-        # Use earliest timestamp from markers or outputs
-        candidates = [
-            evidence.get("completed_ts"),
-            evidence.get("failed_ts"),
-            evidence.get("inprogress_ts"),
-            evidence.get("glb_ts"),
-        ]
-        earliest = min((ts for ts in candidates if ts), default=None)
-        if earliest:
-            reconciled["generation_start"] = earliest
-            changes["timestamps_fixed"] = True
+    # Check if worker already wrote valid timestamps (duration > 1 second indicates
+    # real execution, not marker-derived estimates which are typically < 0.1s)
+    existing_duration = row.get("generation_duration_s", 0)
+    if pd.isna(existing_duration):
+        existing_duration = 0
+    has_valid_worker_data = existing_duration > 1.0
 
-    if pd.isna(row.get("generation_end")) or not row.get("generation_end"):
-        # Use latest timestamp from markers or outputs
-        candidates = [
-            evidence.get("completed_ts"),
-            evidence.get("failed_ts"),
-            evidence.get("glb_ts"),
-        ]
-        latest = max((ts for ts in candidates if ts), default=None)
-        if latest:
-            reconciled["generation_end"] = latest
-            changes["timestamps_fixed"] = True
+    # Only fill timestamps from markers if worker data is missing/invalid
+    if not has_valid_worker_data:
+        if pd.isna(row.get("generation_start")) or not row.get("generation_start"):
+            # Use earliest timestamp from markers or outputs
+            candidates = [
+                evidence.get("completed_ts"),
+                evidence.get("failed_ts"),
+                evidence.get("inprogress_ts"),
+                evidence.get("glb_ts"),
+            ]
+            earliest = min((ts for ts in candidates if ts), default=None)
+            if earliest:
+                reconciled["generation_start"] = earliest
+                changes["timestamps_fixed"] = True
 
-    # Recompute duration if both endpoints present
-    if reconciled.get("generation_start") and reconciled.get("generation_end"):
-        try:
-            start = datetime.fromisoformat(str(reconciled["generation_start"]))
-            end = datetime.fromisoformat(str(reconciled["generation_end"]))
-            duration = max((end - start).total_seconds(), 0)
-            reconciled["generation_duration_s"] = duration
-        except Exception:
-            pass
+        if pd.isna(row.get("generation_end")) or not row.get("generation_end"):
+            # Use latest timestamp from markers or outputs
+            candidates = [
+                evidence.get("completed_ts"),
+                evidence.get("failed_ts"),
+                evidence.get("glb_ts"),
+            ]
+            latest = max((ts for ts in candidates if ts), default=None)
+            if latest:
+                reconciled["generation_end"] = latest
+                changes["timestamps_fixed"] = True
+
+        # Only recompute duration if we just filled timestamps (worker data was missing)
+        if changes.get("timestamps_fixed") and reconciled.get("generation_start") and reconciled.get("generation_end"):
+            try:
+                start = datetime.fromisoformat(str(reconciled["generation_start"]))
+                end = datetime.fromisoformat(str(reconciled["generation_end"]))
+                duration = max((end - start).total_seconds(), 0)
+                reconciled["generation_duration_s"] = duration
+            except Exception:
+                pass
 
     # Fill output paths
     if evidence["has_generated_glb"]:

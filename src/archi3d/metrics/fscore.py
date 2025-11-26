@@ -17,6 +17,7 @@ Key responsibilities:
 import json
 import logging
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
@@ -29,6 +30,21 @@ from archi3d.metrics.fscore_adapter import FScoreRequest, FScoreResponse, evalua
 from archi3d.utils.io import append_log_record, update_csv_atomic
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_fscore_logging():
+    """Configure FScore module logger to output to console."""
+    fscore_logger = logging.getLogger("fscore.evaluator")
+
+    # Only configure if not already configured
+    if not fscore_logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.INFO)
+        formatter = logging.Formatter("  %(message)s")  # Indent for visual grouping
+        handler.setFormatter(formatter)
+        fscore_logger.addHandler(handler)
+        fscore_logger.setLevel(logging.INFO)
+        fscore_logger.propagate = False  # Don't propagate to root logger
 
 
 def _job_matches_filter(job_id: str, filter_pattern: str) -> bool:
@@ -235,6 +251,53 @@ def _process_job(
         with open(result_json_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
+        # Write detailed alignment log for debugging
+        if "alignment_log" in payload and "timing" in payload:
+            log_path = out_dir / "alignment_log.txt"
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(f"FScore Evaluation Log - {job_id}\n")
+                f.write("=" * 60 + "\n\n")
+
+                # Timing breakdown
+                timing = payload["timing"]
+                f.write("Timing Breakdown:\n")
+                f.write(f"  Mesh loading:     {timing.get('t_load_s', 0):.2f}s\n")
+                f.write(f"  Pre-alignment:    {timing.get('t_prealign_s', 0):.2f}s\n")
+                f.write(f"  ICP refinement:   {timing.get('t_icp_s', 0):.2f}s\n")
+                f.write(f"  FScore compute:   {timing.get('t_fscore_s', 0):.2f}s\n")
+                f.write(f"  Total:            {timing.get('t_total_s', 0):.2f}s\n\n")
+
+                # Alignment details
+                align_log = payload["alignment_log"]
+                f.write("Alignment Details:\n")
+                f.write(f"  Method:           {align_log.get('prealign_method', 'N/A')}\n")
+                f.write(f"  Scale factor:     {align_log.get('scale_applied', 'N/A'):.4f}\n")
+                if align_log.get("ransac_fitness") is not None:
+                    f.write(f"  RANSAC fitness:   {align_log['ransac_fitness']:.4f}\n")
+                if align_log.get("pca_best_fitness") is not None:
+                    f.write(f"  PCA fitness:      {align_log['pca_best_fitness']:.4f}\n")
+                f.write(f"  ICP fitness:      {align_log.get('icp_fitness', 'N/A'):.4f}\n")
+                f.write(f"  ICP RMSE:         {align_log.get('icp_inlier_rmse', 'N/A'):.4f}\n\n")
+
+                # Mesh metadata
+                mesh_meta = payload.get("mesh_meta", {})
+                f.write("Mesh Metadata:\n")
+                f.write(f"  GT vertices:      {mesh_meta.get('gt_vertices', 'N/A')}\n")
+                f.write(f"  GT triangles:     {mesh_meta.get('gt_triangles', 'N/A')}\n")
+                f.write(f"  Pred vertices:    {mesh_meta.get('pred_vertices', 'N/A')}\n")
+                f.write(f"  Pred triangles:   {mesh_meta.get('pred_triangles', 'N/A')}\n\n")
+
+                # Final metrics
+                f.write("Metrics:\n")
+                f.write(f"  F-score:          {payload.get('fscore', 'N/A'):.4f}\n")
+                f.write(f"  Precision:        {payload.get('precision', 'N/A'):.4f}\n")
+                f.write(f"  Recall:           {payload.get('recall', 'N/A'):.4f}\n")
+                f.write(f"  Chamfer L2:       {payload.get('chamfer_l2', 'N/A'):.6f}\n")
+
+        # Log visualization path if present
+        if response.visualization_path:
+            logger.info(f"  Saved comparison visualization: {response.visualization_path}")
+
         # Populate result dict with metrics
         result["fscore_status"] = "ok"
         result["fscore"] = payload.get("fscore")
@@ -288,6 +351,7 @@ def compute_fscore(
     n_points: int = 100000,
     timeout_s: int | None = None,
     max_parallel: int = 1,
+    limit: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """
@@ -302,6 +366,7 @@ def compute_fscore(
         n_points: Number of Poisson disk samples per mesh (default: 100000)
         timeout_s: Optional per-job timeout in seconds
         max_parallel: Maximum parallel jobs (default: 1)
+        limit: Optional limit on number of jobs to process (default: None, process all)
         dry_run: Preview selection without running evaluator (default: False)
 
     Returns:
@@ -319,6 +384,9 @@ def compute_fscore(
     # Load config and paths
     cfg = load_config()
     paths = PathResolver(cfg)
+
+    # Configure FScore logging to output to console
+    _configure_fscore_logging()
 
     # Parse status filter
     status_list = [s.strip() for s in only_status.split(",") if s.strip()]
@@ -362,6 +430,11 @@ def compute_fscore(
             eligible_rows.append(row)
         else:
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+
+    # Apply limit if specified
+    if limit is not None and limit > 0 and len(eligible_rows) > limit:
+        eligible_rows = eligible_rows[:limit]
+        logger.info(f"Applied limit: processing first {limit} of {len(eligible_rows) + len(skip_reasons)} jobs")
 
     n_selected = len(eligible_rows)
 

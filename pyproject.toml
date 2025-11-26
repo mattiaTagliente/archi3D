@@ -44,9 +44,21 @@ dev = [
   "mypy>=1.10,<2.0",
   "pytest>=8,<9",
 ]
+# Optional metric tool integrations (can be private wheels or editable installs)
+fscore = []  # Install separately: pip install -e path/to/FScore
+vfscore = []  # Install separately: pip install -e path/to/VFScore
 
 [project.scripts]
 archi3d = "archi3d.cli:app"
+
+# Entry points for third-party metric adapter plugins
+# Third-party packages can register custom adapters here:
+# Example:
+#   [project.entry-points."archi3d.metrics_adapters"]
+#   fscore = "my_package:MyFScoreAdapter"
+#   vfscore = "my_package:MyVFScoreAdapter"
+[project.entry-points."archi3d.metrics_adapters"]
+# No built-in entry points; reserved for third-party plugins
 
 # This new section explicitly tells the build system where to find the package.
 [tool.hatch.build.targets.wheel]

@@ -38,6 +38,7 @@ class FScoreResponse:
     tool_version: str | None = None
     config_hash: str | None = None
     runtime_s: float | None = None
+    visualization_path: str | None = None
     error: str | None = None
 
 
@@ -110,6 +111,18 @@ def _normalize_payload(raw: dict[str, Any]) -> dict[str, Any]:
     if "mesh_meta" in raw and raw["mesh_meta"]:
         normalized["mesh_meta"].update(raw["mesh_meta"])
 
+    # Pass through additional fields (alignment_log, timing, version, config_hash)
+    if "alignment_log" in raw:
+        normalized["alignment_log"] = raw["alignment_log"]
+    if "timing" in raw:
+        normalized["timing"] = raw["timing"]
+    if "version" in raw:
+        normalized["version"] = raw["version"]
+    if "config_hash" in raw:
+        normalized["config_hash"] = raw["config_hash"]
+    if "visualization_path" in raw:
+        normalized["visualization_path"] = raw["visualization_path"]
+
     return normalized
 
 
@@ -121,9 +134,7 @@ def _try_import_api(req: FScoreRequest) -> FScoreResponse | None:
     """
     try:
         # Try importing FScore evaluator
-        # This is a placeholder for the actual import path
-        # Expected interface: evaluate_one(gt_path, cand_path, n_points, out_dir, timeout_s)
-        from fscore.evaluator import evaluate_one  # type: ignore
+        from fscore.evaluator import evaluate_one  # type: ignore  # noqa: PLC0415
 
         start = time.perf_counter()
         result = evaluate_one(
@@ -144,6 +155,7 @@ def _try_import_api(req: FScoreRequest) -> FScoreResponse | None:
             tool_version=result.get("version"),
             config_hash=result.get("config_hash"),
             runtime_s=runtime,
+            visualization_path=result.get("visualization_path"),
         )
 
     except ImportError:
@@ -206,6 +218,7 @@ def _try_cli_invocation(req: FScoreRequest) -> FScoreResponse:
             tool_version=raw.get("version"),
             config_hash=raw.get("config_hash"),
             runtime_s=runtime,
+            visualization_path=raw.get("visualization_path"),
         )
 
     except subprocess.TimeoutExpired:
@@ -226,7 +239,7 @@ def evaluate_fscore(req: FScoreRequest) -> FScoreResponse:
     """
     Main entry point for FScore evaluation.
 
-    Tries import API first, falls back to CLI invocation.
+    Uses adapter discovery to find suitable implementation (import/CLI/entry-point).
 
     Args:
         req: FScore evaluation request
@@ -237,10 +250,18 @@ def evaluate_fscore(req: FScoreRequest) -> FScoreResponse:
     # Ensure output directory exists
     req.out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Try import API first
-    response = _try_import_api(req)
-    if response is not None:
+    # Discover and invoke adapter
+    try:
+        from archi3d.metrics.discovery import get_fscore_adapter  # noqa: PLC0415
+
+        adapter_fn = get_fscore_adapter()
+        response = adapter_fn(req)
+
+        if response is None:
+            return FScoreResponse(ok=False, error="Adapter returned None")
+
         return response
 
-    # Fallback to CLI
-    return _try_cli_invocation(req)
+    except Exception as e:
+        # Return error response (includes AdapterNotFoundError)
+        return FScoreResponse(ok=False, error=str(e))

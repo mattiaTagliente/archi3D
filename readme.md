@@ -148,6 +148,43 @@ uv pip install -e .
 
 > **Note:** `uv` automatically uses `uv.lock` for reproducible installs. The lockfile is managed automatically - you don't need to interact with it directly.
 
+### 5\. Configure API Keys
+
+Archi3D adapters connect to external 3D generation APIs that require authentication. Set the following environment variables before running the worker.
+
+**fal.ai API (required for most adapters)**
+
+Most adapters (Trellis, Tripo3D, Hunyuan3D, etc.) use the fal.ai platform. You need a fal.ai API key:
+
+1. Create an account at [fal.ai](https://fal.ai)
+2. Generate an API key from your dashboard
+3. Set the environment variable:
+
+**Option A: Single key (recommended)**
+```bash
+# In your .env file (recommended)
+FAL_KEY="your-fal-api-key-here" #do not include the quotes in the .env file
+
+# Or in PowerShell (temporary)
+$env:FAL_KEY = "your-fal-api-key-here"
+
+# Or in Git Bash (temporary)
+export FAL_KEY="your-fal-api-key-here"
+```
+
+**Complete .env example**
+
+Your `.env` file should look like this:
+```
+# Workspace configuration
+ARCHI3D_WORKSPACE="C:/Users/yourname/path/to/Testing"
+
+# API keys
+FAL_KEY=your-fal-api-key-here
+```
+
+> **Note:** The `.env` file is gitignored and will not be committed to the repository. Never share your API keys.
+
 You are now ready to use the application!
 
 ## 🛠️ Usage: The Experiment Workflow
@@ -250,6 +287,7 @@ archi3d run worker --run-id "prod-run" --max-parallel 4
   * `--adapter`: Force specific adapter for debugging
   * `--dry-run`: Simulate execution without calling adapters
   * `--fail-fast`: Stop on first failure
+  * `--redo`: Clear state markers and retry selected jobs (use with `--only-status failed` to retry)
 
 **Examples:**
 ```bash
@@ -264,6 +302,9 @@ archi3d run worker --run-id "test-run" --adapter test_algo_1
 
 # Stop on first failure
 archi3d run worker --run-id "test-run" --fail-fast
+
+# Retry failed jobs (e.g., after fixing API key or credits)
+archi3d run worker --run-id "test-run" --only-status failed --redo
 ```
 
 **Key Features:**

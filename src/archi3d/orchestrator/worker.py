@@ -26,9 +26,17 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
+from dotenv import load_dotenv
 from filelock import FileLock
 
+from archi3d.adapters.base import (
+    AdapterPermanentError,
+    Token,
+)
+from archi3d.adapters.registry import REGISTRY
 from archi3d.config.adapters_cfg import load_adapters_cfg
+from archi3d.config.loader import _find_repo_root
 from archi3d.config.paths import PathResolver
 from archi3d.db.generations import upsert_generations
 from archi3d.utils.io import append_log_record, write_text_atomic
@@ -158,6 +166,38 @@ def _is_stale_heartbeat(state_dir: Path, job_id: str, stale_seconds: int = 600) 
     return age > stale_seconds
 
 
+def _clear_state_markers(state_dir: Path, job_id: str) -> None:
+    """
+    Remove all state markers for a job, allowing re-execution.
+
+    Used by --redo flag to clear completed/failed markers before retry.
+    """
+    for status in ["completed", "failed", "inprogress"]:
+        marker = _get_state_marker_path(state_dir, job_id, status)
+        if marker.exists():
+            marker.unlink()
+
+
+def _reload_dotenv() -> None:
+    """
+    Reload the .env file to pick up any changes to API keys.
+
+    This is called before each job execution to ensure that if the user
+    changes the FAL_KEY (e.g., after exhausting credits on one account),
+    the new key is used without restarting the worker.
+    """
+    try:
+        repo_root = _find_repo_root()
+        dotenv_path = repo_root / ".env"
+        if dotenv_path.exists():
+            # override=True to pick up changes to existing keys
+            load_dotenv(dotenv_path, override=True)
+    except Exception:
+        # If we can't find repo root, silently continue
+        # The existing env vars will be used
+        pass
+
+
 # -------------------------
 # Dry-Run Simulation
 # -------------------------
@@ -262,7 +302,6 @@ def _execute_job(
     previews: list[Path] = []
     algo_version = ""
     unit_price = 0.0
-    estimated_cost = 0.0
     price_source = "unknown"
 
     try:
@@ -274,6 +313,9 @@ def _execute_job(
             price_source = "dry-run"
         else:
             # Real execution
+            # Reload .env to pick up any API key changes
+            _reload_dotenv()
+
             # Validate images exist
             for img_path in used_images:
                 img_abs = paths.workspace_root / img_path
@@ -284,16 +326,66 @@ def _execute_job(
             algo_cfg = adapters_cfg.get("adapters", {}).get(algo, {})
             unit_price = float(algo_cfg.get("unit_price_usd", 0.0))
             price_source = algo_cfg.get("price_source", "adapters.yaml")
-            estimated_cost = unit_price
 
-            # TODO: Implement real adapter execution
-            # For now, create placeholder to allow testing
-            gen_glb_path = out_dir / "generated.glb"
-            gen_glb_path.write_text(
-                "# Placeholder GLB (adapter not implemented)\n", encoding="utf-8"
+            # Get adapter class from registry
+            adapter_cls = REGISTRY.get(algo)
+            if adapter_cls is None:
+                raise AdapterPermanentError(f"Unknown adapter: {algo}")
+
+            # Create adapter instance
+            logs_dir = paths.run_root(run_id) / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            adapter = adapter_cls(
+                cfg=algo_cfg,
+                workspace=paths.workspace_root,
+                logs_dir=logs_dir,
             )
+
+            # Build Token for adapter
+            # Extract image suffixes from paths (e.g., _A, _B from image names)
+            img_suffixes = "-".join(
+                Path(p).stem.rsplit("_", 1)[-1]
+                for p in used_images
+                if "_" in Path(p).stem
+            ) or "default"
+
+            token = Token(
+                run_id=run_id,
+                algo=algo,
+                product_id=job_row["product_id"],
+                variant=job_row["variant"],
+                image_files=used_images,
+                img_suffixes=img_suffixes,
+                job_id=job_id,
+            )
+
+            # Execute adapter
+            exec_result = adapter.execute(token, deadline_s=480)
+            algo_version = algo_cfg.get("endpoint", algo)
+
+            # Handle result - glb_path may be URL or local path
+            glb_result = exec_result.glb_path
+            gen_glb_path = out_dir / "generated.glb"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            if isinstance(glb_result, str) and glb_result.startswith("http"):
+                # Download from URL
+                with requests.get(glb_result, stream=True, timeout=120) as r:
+                    r.raise_for_status()
+                    with gen_glb_path.open("wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+            elif isinstance(glb_result, Path):
+                # Copy local file
+                import shutil
+                shutil.copy2(glb_result, gen_glb_path)
+            else:
+                # Assume string path
+                import shutil
+                shutil.copy2(Path(glb_result), gen_glb_path)
+
             status = "completed"
-            algo_version = "placeholder"
 
         # Verify output exists and is non-empty
         if status == "completed":
@@ -332,7 +424,6 @@ def _execute_job(
         "generation_duration_s": duration_s,
         "algo_version": algo_version,
         "unit_price_usd": unit_price,
-        "estimated_cost_usd": estimated_cost,
         "price_source": price_source,
         "gen_object_path": "",  # Default to empty
         "preview_1_path": "",
@@ -371,6 +462,7 @@ def run_worker(
     adapter: str | None = None,
     dry_run: bool = False,
     fail_fast: bool = False,
+    redo: bool = False,
 ) -> dict[str, Any]:
     """
     Execute generation jobs for a given run.
@@ -384,6 +476,7 @@ def run_worker(
         adapter: Force specific adapter (debug mode)
         dry_run: Simulate execution without calling adapters
         fail_fast: Stop on first failure
+        redo: Clear state markers for selected jobs before execution, allowing retry
 
     Returns:
         Dict with summary: processed, completed, failed, skipped
@@ -394,6 +487,14 @@ def run_worker(
 
     # Parse allowed statuses
     allowed_statuses = [s.strip() for s in only_status.split(",")]
+
+    # When --redo is set, auto-expand status filter to include completed/failed
+    # This allows retrying finished jobs without requiring explicit --only-status
+    if redo:
+        if "completed" not in allowed_statuses:
+            allowed_statuses.append("completed")
+        if "failed" not in allowed_statuses:
+            allowed_statuses.append("failed")
 
     # Read generations.csv
     generations_csv = paths.generations_csv_path()
@@ -462,6 +563,13 @@ def run_worker(
     if df_jobs.empty:
         return {"processed": 0, "completed": 0, "failed": 0, "skipped": already_done_count}
 
+    # Clear state markers if redo mode is enabled
+    if redo:
+        state_dir = paths.state_dir(run_id)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        for _, row in df_jobs.iterrows():
+            _clear_state_markers(state_dir, row["job_id"])
+
     # Log worker start
     log_path = paths.worker_log_path()
     append_log_record(
@@ -475,6 +583,7 @@ def run_worker(
             "adapter": adapter,
             "dry_run": dry_run,
             "fail_fast": fail_fast,
+            "redo": redo,
             "total_jobs": len(df_jobs),
             **worker_identity,
         },

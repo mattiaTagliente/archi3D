@@ -280,7 +280,7 @@ archi3d batch create --run-id "test" --algos tripo3d_v2p5 --dry-run
      - **Execution metadata**: `status` (running/completed/failed), `generation_start`, `generation_end`, `generation_duration_s`
      - **Worker identity**: `worker_host`, `worker_user`, `worker_gpu`, `worker_env`, `worker_commit`
      - **Outputs**: `gen_object_path`, `preview_1_path`, `preview_2_path`, `preview_3_path`, `algo_version`
-     - **Costs**: `unit_price_usd`, `estimated_cost_usd`, `price_source`
+     - **Costs**: `unit_price_usd`, `price_source`
      - **Errors**: `error_msg` (truncated to 2000 chars)
    - All paths are workspace-relative (POSIX format with forward slashes)
    - Atomic upserts via Phase 0 `update_csv_atomic()` with (run_id, job_id) keys
@@ -846,3 +846,524 @@ archi3d compute vfscore --run-id "large-models" --timeout-s 600
 - Rendering and scoring are performed by external VFScore tool (not within archi3D)
 
 **Next Phase**: Final reporting enhancements, binary wheel packaging (FScore/VFScore distribution)
+
+---
+
+### Bug Fixes & Improvements (2025-11-23)
+
+**CSV Metadata Data Loss Investigation & Fix**
+
+**Root Cause**: Worker CSV updates were lost due to OneDrive sync conflict, causing consolidate to reconstruct timestamps from state markers (which resulted in near-zero durations since both start/end were set to completion time).
+
+**Symptoms**:
+- 14 completed jobs showing ~0.000001s duration instead of actual 24-183 seconds
+- `generation_start` and `generation_end` timestamps nearly identical (differing by microseconds)
+- Price columns empty for affected jobs
+- Completed job (`b89a7aa4150b`) retaining error_msg from previous failed attempt
+
+**Fixes Applied**:
+
+1. **Data Restoration** (`scripts/fix_nov22_timestamps.py`):
+   - Created one-time fix script to restore correct timestamps from worker.log
+   - Reconstructs `generation_start`, `generation_end`, `generation_duration_s` from log entries
+   - Fills missing prices from `adapters.yaml` configuration
+   - Clears `error_msg` for completed jobs
+   - Usage: `python scripts/fix_nov22_timestamps.py` (dry-run) or `--apply` to write
+
+2. **Consolidate Logic Improvement** (`src/archi3d/orchestrator/consolidate.py`):
+   - Modified `_reconcile_row()` to preserve worker-written timestamps when duration > 1 second
+   - Previously: Always filled timestamps from markers and recomputed duration
+   - Now: Only fills timestamps/recomputes duration if existing duration < 1 second (indicating marker-derived values)
+   - Prevents consolidate from overwriting valid worker data with marker-derived estimates
+
+3. **Worker Enhancements** (previously implemented):
+   - Added `--redo` flag to clear state markers and retry failed/completed jobs
+   - Added `.env` hot-reload (`_reload_dotenv()`) before each API call for API key changes without restart
+
+**Verification**:
+- All 68 tests passing after consolidate fix
+- Data restored: Duration range now 24-183 seconds (correct)
+- All 15 jobs have prices filled
+- No completed jobs with error_msg
+
+**Prevention**:
+- Consolidate now preserves valid worker data (duration > 1s)
+- Worker logs capture true execution metrics even if CSV updates are lost
+- Worker log can be used for data recovery if needed
+
+---
+
+### Additional Fixes (2025-11-23)
+
+**1. `--redo` Flag Behavior Fix** (`src/archi3d/orchestrator/worker.py`):
+- **Issue**: `--redo` only cleared state markers but didn't include completed/failed jobs in status filter
+- **Problem**: With default `--only-status=enqueued`, completed jobs were filtered out BEFORE markers were cleared
+- **Fix**: When `--redo` is set, auto-expand status filter to include `completed` and `failed`
+- **Usage**: `archi3d run worker --run-id "..." --redo` now retries all completed/failed jobs
+
+**2. Batch Create Status Overwrite Bug** (`src/archi3d/orchestrator/batch.py`):
+- **Issue**: Running `batch create` twice for same run_id would reset job status to "enqueued"
+- **Root Cause**: `update_csv_atomic()` overwrites ALL columns including status
+- **Fix**: Load existing jobs before creating records, skip jobs that already exist
+- **Result**: Re-running batch create is now safe - existing jobs are preserved with `already_exists` skip reason
+
+**3. Redundant Price Column Removal**:
+- **Issue**: Both `unit_price_usd` and `estimated_cost_usd` columns existed with identical values
+- **Fix**: Removed `estimated_cost_usd` from:
+  - `worker.py` upsert data
+  - `adapters/base.py` GenerationResult dataclass
+  - `scripts/fix_nov22_timestamps.py`
+  - `tables/generations.csv` (existing data)
+- **Result**: Single `unit_price_usd` column now used for pricing
+
+**Verification**:
+- All 68 tests passing
+- CSV now has 46 columns (was 47)
+
+---
+
+### FScore Integration Enhancement (2025-11-25) ✅ COMPLETE
+
+**Objective**: Add missing logging and visualization features to FScore integration for better debugging and HTML report preparation.
+
+**Issues Identified**:
+1. **Missing Console Logs**: FScore's detailed alignment/timing logs weren't captured, only Open3D warnings visible
+2. **Missing Visualization**: Original FScore saves comparison `.glb` file (GT gray, prediction red) for visual inspection - needed for HTML report
+3. **Missing Debug Log**: Need detailed `alignment_log.txt` file with timing/alignment details for troubleshooting
+
+**Open3D Warnings Explanation**:
+- `"Too few correspondences after mutual filter"`: During RANSAC feature matching, very few point pairs pass geometric consistency checks. Open3D falls back to using all correspondences. This is harmless - alignment still succeeds.
+- `"Read PNG failed"`: Open3D attempted to read a texture/image file that's corrupted or in an unexpected format. Unrelated to FScore computation.
+
+**Changes Made**:
+
+1. **FScore `evaluate_one` Enhancement** (`FScore/src/fscore/evaluator.py`):
+   - Added comparison visualization GLB export (GT in gray, aligned prediction in red)
+   - Added detailed console logging with `logger.info()` calls:
+     - Mesh loading progress (vertices/triangles counts)
+     - Pre-alignment stage (RANSAC/PCA method)
+     - ICP refinement stage
+     - Final metric summary with timing
+   - Added `alignment_log` to return payload (prealign method, scale, RANSAC/PCA fitness, ICP metrics)
+   - Added `timing` to return payload (breakdown: load, prealign, ICP, fscore, total)
+   - Added `visualization_path` to return payload (path to comparison GLB)
+   - Added `version` and `config_hash` to return payload
+   - Helper function `_rotation_matrix_to_quaternion()` for transform extraction
+
+2. **FScore Package Update** (`FScore/src/fscore/__init__.py`):
+   - Exported `evaluate_one` function in `__all__` for public API
+
+3. **Adapter Update** (`src/archi3d/metrics/fscore_adapter.py`):
+   - Added `visualization_path` field to `FScoreResponse` dataclass
+   - Updated `_try_import_api()` to extract and return `visualization_path`
+   - Updated `_try_cli_invocation()` to extract and return `visualization_path`
+   - **CRITICAL FIX**: Updated `_normalize_payload()` to pass through new fields:
+     - `alignment_log` (prealign method, scale, RANSAC/PCA/ICP fitness/RMSE)
+     - `timing` (load, prealign, ICP, fscore, total timings)
+     - `version` (FScore tool version)
+     - `config_hash` (configuration fingerprint)
+     - `visualization_path` (path to comparison GLB)
+   - Previously these fields were being stripped during normalization, causing missing artifacts
+
+4. **Computation Logic Enhancement** (`src/archi3d/metrics/fscore.py`):
+   - Added `_configure_fscore_logging()` function to configure FScore's logger for console output
+     - Enables FScore's logger.info() messages to appear in console
+     - Adds indentation for visual grouping
+     - Prevents duplicate logging via propagate=False
+   - Added logging configuration call at start of `compute_fscore()` function
+   - Added detailed alignment log writer in `_process_job()`:
+     - Saves `alignment_log.txt` in artifact directory with:
+       - Timing breakdown (load, prealign, ICP, fscore computation)
+       - Alignment details (method, scale, RANSAC/PCA/ICP fitness/RMSE)
+       - Mesh metadata (vertex/triangle counts for GT and prediction)
+       - Final metrics (F-score, precision, recall, Chamfer L2)
+   - Added visualization path logging when present
+   - All data written to `runs/<run_id>/metrics/fscore/<job_id>/`:
+     - `result.json` — Complete payload with all metrics and new fields
+     - `alignment_log.txt` — Human-readable debug log
+     - `generated_comparison.glb` — Side-by-side visualization (GT gray, pred red)
+
+5. **CLI Enhancement** (`src/archi3d/cli.py`):
+   - Added `--limit` flag to `archi3d compute fscore` command
+   - Allows quick testing with subset of jobs (e.g., `--limit 1`)
+   - Parameter properly wired through CLI → compute_fscore function
+
+**Output Artifacts Structure**:
+```
+runs/<run_id>/metrics/fscore/<job_id>/
+├── result.json                 # Complete payload with alignment_log, timing, version, config_hash
+├── alignment_log.txt           # Human-readable debug log
+└── generated_comparison.glb    # Visualization (GT gray, prediction red)
+```
+
+**Benefits**:
+- **Better Debugging**: `alignment_log.txt` provides timing/alignment details for troubleshooting
+- **Visual Inspection**: Comparison GLB allows visual verification of alignment quality
+- **HTML Report Prep**: Visualization GLB path will be used in future Phase 7 HTML report with 3D viewer
+- **Console Clarity**: Logger outputs show progress (mesh loading, alignment stages, final metrics) instead of just Open3D warnings
+- **Quick Testing**: `--limit` flag enables fast iteration during development
+
+**Testing**:
+✅ Successfully tested with `--limit 1` on run `2025-11-22T21-25-08Z`:
+- Console output shows detailed FScore progress messages:
+  - "Loaded GT mesh: Leolux-LX91-armchair_KOeBH9twtP.glb (51290 vertices)"
+  - "Loaded candidate mesh: generated.glb (50790 vertices)"
+  - "Running pre-alignment (centering, scaling, RANSAC/PCA)..."
+  - "Running ICP refinement..."
+  - "Computing F-score metrics..."
+  - "Saved comparison visualization: .../generated_comparison.glb"
+  - "Evaluation complete: F-score=0.600, Precision=0.603, Recall=0.596, Total time=361.2s"
+- `alignment_log.txt` created with timing breakdown, alignment details, mesh metadata
+- `generated_comparison.glb` saved for visual inspection
+- `result.json` contains all new fields (alignment_log, timing, version, config_hash, visualization_path)
+- Total runtime: 361.2s for single job
+
+**Known Issue**:
+- Windows permission error when updating `generations.csv` if file is locked by Excel, OneDrive sync, or antivirus
+- Workaround: Close Excel, pause OneDrive sync, or wait for sync to complete before running command
+- FScore evaluation itself succeeds; error only occurs at final CSV update step
+
+**Installation**:
+To use the updated FScore integration:
+```bash
+# Install FScore as editable package
+uv pip install --force-reinstall -e "C:/Users/matti/OneDrive - Politecnico di Bari (1)/Dev/FScore"
+
+# Run FScore computation with limit for testing
+archi3d compute fscore --run-id "your-run-id" --limit 1
+
+# Run on all completed jobs
+archi3d compute fscore --run-id "your-run-id"
+```
+
+
+---
+
+### Phase 8 — Adapter Plug-In System (2025-11-25) ✅ COMPLETE
+
+**Objective**: Implement monorepo integration with plug-in adapters for FScore/VFScore, supporting import-first/CLI-fallback discovery and third-party plugins via entry points.
+
+**Background**:
+Per `plans/Phase_8.md`, this phase prepares for closed-source binary distribution of FScore and VFScore while keeping archi3D open source. The adapter system allows flexible deployment models:
+- **Development**: Editable package installs (`pip install -e path/to/FScore`)
+- **Production**: Binary wheel distribution (`pip install fscore-0.2.0-*.whl`)
+- **CI/CD**: External CLI invocation via environment variables
+- **Third-party**: Custom adapters via setuptools entry points
+
+**Implemented Components**:
+
+1. **Protocol Definitions** (`src/archi3d/plugins/metrics.py`):
+   - `FScoreAdapter` Protocol with `evaluate(req: FScoreRequest) -> FScoreResponse` method
+   - `VFScoreAdapter` Protocol with `evaluate(req: VFScoreRequest) -> VFScoreResponse` method
+   - `load_entry_point_adapter(namespace, name)` — Third-party plugin discovery
+   - Runtime-checkable protocols for duck typing support
+
+2. **Adapter Discovery Layer** (`src/archi3d/metrics/discovery.py`):
+   - 3-tier resolution pattern:
+     1. **Import mode**: Check if `fscore`/`vfscore` module is installed via `importlib.util.find_spec()`
+     2. **Entry point mode**: Load from `archi3d.metrics_adapters` namespace
+     3. **CLI mode**: Use command from `ARCHI3D_FSCORE_CLI`/`ARCHI3D_VFSCORE_CLI` environment variable
+   - Environment variable overrides:
+     - `ARCHI3D_FSCORE_IMPL` / `ARCHI3D_VFSCORE_IMPL` — Force specific mode (`import`, `cli`, `auto`)
+     - `ARCHI3D_FSCORE_CLI` / `ARCHI3D_VFSCORE_CLI` — CLI command strings
+   - `AdapterNotFoundError` with actionable error messages (installation instructions)
+   - Separate discovery functions: `get_fscore_adapter()`, `get_vfscore_adapter()`
+
+3. **Adapter Integration Updates**:
+   - Modified `src/archi3d/metrics/fscore_adapter.py`:
+     - `evaluate_fscore()` now uses `get_fscore_adapter()` from discovery layer
+     - Removed direct `_try_import_api()` / `_try_cli_invocation()` calls from main entry point
+     - Preserved original implementation functions for import/CLI wrappers
+   - Modified `src/archi3d/metrics/vfscore_adapter.py`:
+     - Same pattern as fscore_adapter.py
+     - Discovery-based resolution for VFScore tool
+
+4. **CLI Error Handling** (`src/archi3d/cli.py`):
+   - Enhanced `compute fscore` and `compute vfscore` commands
+   - Catches `AdapterNotFoundError` and displays clean error message without traceback
+   - Other exceptions still show full traceback for debugging
+
+5. **PyProject Configuration** (`pyproject.toml`):
+   - Added optional dependencies:
+     ```toml
+     [project.optional-dependencies]
+     fscore = []  # Install separately: pip install -e path/to/FScore
+     vfscore = []  # Install separately: pip install -e path/to/VFScore
+     ```
+   - Defined entry point namespace for third-party plugins:
+     ```toml
+     [project.entry-points."archi3d.metrics_adapters"]
+     # No built-in entry points; reserved for third-party plugins
+     ```
+
+6. **Integration Documentation** (`docs/INTEGRATION.md`):
+   - Complete integration guide for FScore/VFScore
+   - Three integration methods documented:
+     1. Python import (recommended for development)
+     2. CLI invocation (recommended for CI/CD)
+     3. Entry points (for third-party plugins)
+   - Environment variable configuration reference
+   - Plugin development tutorial with example code
+   - Canonical payload schema specification
+   - Troubleshooting section with common issues
+   - Discovery priority explanation
+
+**Environment Variables**:
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `ARCHI3D_FSCORE_IMPL` | `import`/`cli`/`auto` | `auto` | Force FScore resolution mode |
+| `ARCHI3D_VFSCORE_IMPL` | `import`/`cli`/`auto` | `auto` | Force VFScore resolution mode |
+| `ARCHI3D_FSCORE_CLI` | Command string | - | FScore CLI command |
+| `ARCHI3D_VFSCORE_CLI` | Command string | - | VFScore CLI command |
+
+**Key Features**:
+- **Import-first strategy**: Attempts Python import before falling back to CLI
+- **Graceful degradation**: Clean error messages when adapters unavailable
+- **Third-party extensibility**: Entry point support for custom adapters
+- **Environment control**: Force specific resolution modes via environment variables
+- **Docker-friendly**: CLI mode supports containerized deployment
+- **No schema changes**: SSOT tables unchanged from Phases 0-7
+- **Backward compatible**: Existing code works unchanged when modules are installed
+
+**Testing**:
+✅ Verified with dry-run test:
+```bash
+archi3d compute fscore --run-id "2025-11-22T21-25-08Z" --limit 1 --dry-run
+```
+- Successfully resolved FScore adapter via import mode
+- Logged: "FScore adapter resolved via import"
+- No changes to existing test suite (all 68 tests passing)
+
+**Usage Examples**:
+
+```bash
+# Development: Install FScore as editable package
+pip install -e "path/to/FScore"
+archi3d compute fscore --run-id "..."
+
+# Production: Install binary wheel
+pip install fscore-0.2.0-cp311-cp311-win_amd64.whl
+archi3d compute fscore --run-id "..."
+
+# CI/CD: Use external CLI (no pip install needed)
+export ARCHI3D_FSCORE_CLI="python -m fscore"
+archi3d compute fscore --run-id "..."
+
+# Force specific mode
+export ARCHI3D_FSCORE_IMPL="import"  # Fail if not installable
+archi3d compute fscore --run-id "..."
+```
+
+**Linting/Formatting**:
+- All ruff checks passing (PLC0415 warnings suppressed for intentional lazy imports)
+- Black formatting applied
+- No F401 unused import warnings (using `importlib.util.find_spec()` instead of direct imports)
+
+**Non-Functional Changes**:
+- No changes to CLI semantics or existing commands
+- No changes to SSOT schema or file formats
+- Discovery layer adds ~100 lines of code total
+- All existing imports remain compatible
+
+**Next Steps**: Binary wheel distribution for FScore (Cython compilation, proprietary license)
+
+---
+
+### FScore Binary Distribution (2025-11-25) ✅ COMPLETE
+
+**Objective**: Package FScore as a closed-source binary wheel using Cython compilation for code protection and distribution.
+
+**Background**:
+Per the "open-core" delivery strategy, FScore contains proprietary algorithms and must be distributed as compiled binaries (.pyd on Windows, .so on Linux) to protect intellectual property. The binary wheel approach:
+- Preserves the `import fscore` interface (compatible with Phase 8 adapter discovery)
+- Prevents source code inspection and reverse engineering
+- Allows standard pip installation
+- Maintains performance (native C extensions)
+
+**Changes Made**:
+
+1. **Cython Build Configuration** (`FScore/setup.py`):
+   - Compiles 7 core modules to C extensions:
+     - `fscore.evaluator` — Main evaluation logic
+     - `fscore.alignment` — Mesh alignment algorithms (RANSAC, ICP)
+     - `fscore.metrics` — F-score and Chamfer distance computation
+     - `fscore.visualization` — GLB comparison export
+     - `fscore.utils` — Shared utilities
+     - `fscore.workspace` — Workspace management
+     - `fscore.fbx_converter` — FBX to GLB conversion
+   - Compiler directives for optimization:
+     - `boundscheck=False` — Disable array bounds checking (performance)
+     - `wraparound=False` — Disable negative indexing (performance)
+     - `cdivision=True` — C-style division (performance)
+     - `embedsignature=True` — Preserve function signatures for `help()`
+     - `binding=True` — Enable runtime introspection
+   - NumPy integration via `np.get_include()`
+   - Build directory: `build/cython/` for intermediate files
+
+2. **Project Configuration Updates** (`FScore/pyproject.toml`):
+   - Updated build system requirements:
+     ```toml
+     [build-system]
+     requires = ["setuptools>=61.0", "wheel", "Cython>=0.29.0", "numpy>=1.21.0"]
+     build-backend = "setuptools.build_meta"
+     ```
+   - Changed license from MIT to Proprietary:
+     ```toml
+     license = {text = "Proprietary - All Rights Reserved"}
+     classifiers = [
+         "License :: Other/Proprietary License",
+         # ... other classifiers
+     ]
+     ```
+   - Version bumped to `0.2.0` (was `0.1.0`)
+
+3. **Proprietary License** (`FScore/LICENSE.txt`):
+   - 10-section comprehensive license agreement
+   - Key restrictions:
+     - **No reverse engineering, decompilation, or disassembly**
+     - **No modification or derivative works**
+     - **No redistribution** (except with written permission)
+     - **No commercial use without explicit permission**
+     - **No source code access** (binary distribution only)
+   - Liability limitation and warranty disclaimer
+   - Termination clause for license violations
+   - Governing law (jurisdiction TBD by user)
+
+4. **Distribution Control** (`FScore/MANIFEST.in`):
+   - Includes: LICENSE.txt, README.md, pyproject.toml, setup.py
+   - Excludes:
+     - Test files (`tests/`, `test_models/`, `ground_truth/`, `run_test.py`)
+     - Dev files (`.git/`, `.venv/`, `.claude/`, `.env`, `.gitignore`)
+     - Build artifacts (`build/`, `dist/`, `*.egg-info/`)
+     - Compiled files (`*.pyc`, `*.pyo`, `*.so`, `*.pyd`)
+     - Documentation (CLAUDE.md, gemini.md, plan.md)
+     - Binary tools (FBX2glTF-windows-x64.exe)
+
+**Build Process**:
+
+```bash
+# Install build dependencies
+pip install Cython build wheel
+
+# Build binary wheel
+cd FScore
+python setup.py bdist_wheel
+
+# Output
+dist/fscore-0.2.0-cp311-cp311-win_amd64.whl  # 303 KB
+```
+
+**Build Output**:
+- Wheel file: `fscore-0.2.0-cp311-cp311-win_amd64.whl` (303 KB)
+- Platform-specific: `cp311-cp311-win_amd64` (Python 3.11, Windows x64)
+- Contains:
+  - 7 compiled `.pyd` extensions (binary C modules)
+  - 7 corresponding `.py` stub files (for type hints/introspection)
+  - `__init__.py` and `__main__.py` (package structure)
+  - LICENSE.txt, metadata
+
+**Installation Verification**:
+
+Created test script (`test_binary_wheel.py`) and verified:
+
+✅ **Test 1**: Module imports successfully
+```
+SUCCESS: fscore version 0.2.0
+Location: .../site-packages/fscore/__init__.py
+```
+
+✅ **Test 2**: Function callable and detected as Cython function
+```
+SUCCESS: evaluate_one = <cyfunction evaluate_one at 0x...>
+```
+
+✅ **Test 3**: All modules compiled to binary extensions
+```
+Compiled extensions (.pyd): 7
+  - alignment.cp311-win_amd64.pyd
+  - evaluator.cp311-win_amd64.pyd
+  - fbx_converter.cp311-win_amd64.pyd
+  - metrics.cp311-win_amd64.pyd
+  - utils.cp311-win_amd64.pyd
+  - visualization.cp311-win_amd64.pyd
+  - workspace.cp311-win_amd64.pyd
+```
+
+✅ **Test 4**: All expected modules verified as compiled
+```
+[OK] evaluator is compiled
+[OK] alignment is compiled
+[OK] metrics is compiled
+[OK] visualization is compiled
+[OK] utils is compiled
+[OK] workspace is compiled
+[OK] fbx_converter is compiled
+```
+
+**Installation**:
+
+```bash
+# Install binary wheel
+pip install fscore-0.2.0-cp311-cp311-win_amd64.whl
+
+# Verify installation
+python -c "from fscore.evaluator import evaluate_one; print('Success!')"
+
+# Use with archi3D (Phase 8 adapter discovery)
+archi3d compute fscore --run-id "your-run-id"
+```
+
+**Integration with archi3D**:
+- Phase 8 adapter discovery automatically detects installed wheel
+- No code changes needed in archi3D
+- Works identically to editable install (`pip install -e path/to/FScore`)
+- CLI output: "FScore adapter resolved via import"
+
+**Code Protection**:
+- Source code compiled to native C extensions
+- `.pyd` files are binary-only (not human-readable)
+- Decompilation extremely difficult (requires reverse engineering C code)
+- Proprietary license explicitly forbids reverse engineering
+- Stronger protection than PyArmor or PyInstaller
+
+**Performance**:
+- Native C extensions provide performance benefits
+- Compiler optimizations enabled (bounds check disabled, C division)
+- NumPy integration via C API
+
+**Platform Support**:
+- Current build: Windows x64, Python 3.11
+- For multi-platform distribution, build on each target platform:
+  - Linux: `cp311-cp311-linux_x86_64.whl`
+  - macOS: `cp311-cp311-macosx_*_x86_64.whl` or `macosx_*_arm64.whl`
+- Use `cibuildwheel` for automated multi-platform builds in CI/CD
+
+**Known Limitations**:
+- `.py` stub files still included (for type hints and introspection)
+  - These contain function signatures but not implementation details
+  - Required for `help()`, IDE autocomplete, and type checking
+  - Implementation code is in `.pyd` files only
+- No runtime license verification (future enhancement)
+- Wheel is platform-specific (need separate builds for Linux/macOS)
+
+**Deliverables**:
+- ✅ `setup.py` with Cython configuration
+- ✅ Updated `pyproject.toml` with build requirements and proprietary license
+- ✅ `LICENSE.txt` with comprehensive proprietary license agreement
+- ✅ `MANIFEST.in` controlling distribution contents
+- ✅ Binary wheel: `dist/fscore-0.2.0-cp311-cp311-win_amd64.whl` (303 KB)
+- ✅ Verification script confirming compilation and installation
+
+**Distribution Instructions**:
+1. Build wheel on target platform: `python setup.py bdist_wheel`
+2. Distribute wheel file (via private PyPI, email, or download link)
+3. Recipients install via: `pip install fscore-0.2.0-*.whl`
+4. No source code access required
+5. License agreement terms in LICENSE.txt
+
+**Next Steps**:
+- Optional: VFScore binary distribution (same approach)
+- Optional: Multi-platform wheel builds using cibuildwheel
+- Optional: Runtime license verification for commercial use
+- Optional: PyPI upload (private repository) for easier distribution

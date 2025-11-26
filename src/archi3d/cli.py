@@ -413,6 +413,9 @@ def run_worker_cmd(
         False, "--dry-run", help="Simulate execution without calling adapters"
     ),
     fail_fast: bool = typer.Option(False, "--fail-fast", help="Stop on first failure"),
+    redo: bool = typer.Option(
+        False, "--redo", help="Clear state markers and retry selected jobs"
+    ),
 ):
     """
     Execute generation jobs from tables/generations.csv for a given run.
@@ -436,12 +439,13 @@ def run_worker_cmd(
     panel_text = (
         f"[bold]Run Worker (Phase 3)[/bold]\n"
         f"Run: {run_id}\n"
-        f"Jobs filter: {jobs or '—'}\n"
+        f"Jobs filter: {jobs or '---'}\n"
         f"Only status: {only_status}\n"
         f"Max parallel: {max_parallel}\n"
-        f"Adapter override: {adapter or '—'}\n"
+        f"Adapter override: {adapter or '---'}\n"
         f"Dry-run: {dry_run}\n"
-        f"Fail-fast: {fail_fast}"
+        f"Fail-fast: {fail_fast}\n"
+        f"Redo: {redo}"
     )
     console.print(Panel.fit(panel_text))
 
@@ -455,6 +459,7 @@ def run_worker_cmd(
             adapter=adapter,
             dry_run=dry_run,
             fail_fast=fail_fast,
+            redo=redo,
         )
     except Exception as e:  # noqa: BLE001
         import traceback
@@ -677,6 +682,9 @@ def compute_fscore_cmd(
     max_parallel: int = typer.Option(
         1, "--max-parallel", help="Maximum parallel jobs (default: 1)"
     ),
+    limit: int | None = typer.Option(
+        None, "--limit", help="Limit number of jobs to process (optional)"
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Preview selection without running evaluator (default: false)"
     ),
@@ -706,6 +714,7 @@ def compute_fscore_cmd(
         f"N-points: {n_points}\n"
         f"Timeout: {timeout_s or '—'}s\n"
         f"Max parallel: {max_parallel}\n"
+        f"Limit: {limit or '—'}\n"
         f"Dry-run: {dry_run}"
     )
     console.print(Panel.fit(panel_text))
@@ -720,12 +729,19 @@ def compute_fscore_cmd(
             n_points=n_points,
             timeout_s=timeout_s,
             max_parallel=max_parallel,
+            limit=limit,
             dry_run=dry_run,
         )
     except Exception as e:  # noqa: BLE001
         import traceback
 
-        _fail(f"FScore computation failed: {e}\n{traceback.format_exc()}")
+        from archi3d.metrics.discovery import AdapterNotFoundError
+
+        # For adapter discovery errors, show clean message without traceback
+        if isinstance(e, AdapterNotFoundError):
+            _fail(str(e))
+        else:
+            _fail(f"FScore computation failed: {e}\n{traceback.format_exc()}")
 
     # Display summary
     if dry_run:
@@ -846,7 +862,13 @@ def compute_vfscore_cmd(
     except Exception as e:  # noqa: BLE001
         import traceback
 
-        _fail(f"VFScore computation failed: {e}\n{traceback.format_exc()}")
+        from archi3d.metrics.discovery import AdapterNotFoundError
+
+        # For adapter discovery errors, show clean message without traceback
+        if isinstance(e, AdapterNotFoundError):
+            _fail(str(e))
+        else:
+            _fail(f"VFScore computation failed: {e}\n{traceback.format_exc()}")
 
     # Display summary
     if dry_run:

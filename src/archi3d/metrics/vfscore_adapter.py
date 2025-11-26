@@ -129,8 +129,9 @@ def _try_import_api(req: VFScoreRequest) -> VFScoreResponse | None:
     try:
         # Try importing VFScore evaluator
         # This is a placeholder for the actual import path
-        # Expected interface: evaluate_visual_fidelity(cand_glb, ref_images, out_dir, repeats, timeout_s)
-        from vfscore.evaluator import evaluate_visual_fidelity  # type: ignore
+        # Expected interface:
+        # evaluate_visual_fidelity(cand_glb, ref_images, out_dir, repeats, timeout_s)
+        from vfscore.evaluator import evaluate_visual_fidelity  # type: ignore  # noqa: PLC0415
 
         start_total = time.perf_counter()
         result = evaluate_visual_fidelity(
@@ -178,7 +179,8 @@ def _try_cli_invocation(req: VFScoreRequest) -> VFScoreResponse:
     Fallback: invoke VFScore via CLI.
 
     Expected CLI interface:
-    python -m vfscore --cand-glb <path> --ref-images <path1> <path2> ... --out-dir <dir> --repeats <n>
+    python -m vfscore --cand-glb <path> --ref-images <path1> <path2> ...
+                      --out-dir <dir> --repeats <n>
 
     Returns VFScoreResponse with ok=True on success, ok=False on error.
     """
@@ -293,10 +295,18 @@ def evaluate_vfscore(req: VFScoreRequest) -> VFScoreResponse:
     # Update request to only use existing images
     req.ref_images = existing_refs
 
-    # Try import API first
-    response = _try_import_api(req)
-    if response is not None:
+    # Discover and invoke adapter
+    try:
+        from archi3d.metrics.discovery import get_vfscore_adapter  # noqa: PLC0415
+
+        adapter_fn = get_vfscore_adapter()
+        response = adapter_fn(req)
+
+        if response is None:
+            return VFScoreResponse(ok=False, error="Adapter returned None")
+
         return response
 
-    # Fallback to CLI
-    return _try_cli_invocation(req)
+    except Exception as e:
+        # Return error response (includes AdapterNotFoundError)
+        return VFScoreResponse(ok=False, error=str(e))

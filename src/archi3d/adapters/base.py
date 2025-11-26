@@ -69,7 +69,6 @@ class GenerationResult:
     previews: list[Path]  # 0..3 preview images (absolute paths)
     algo_version: str | None
     unit_price_usd: float | None
-    estimated_cost_usd: float | None
     price_source: str | None
     raw_metadata: dict | None  # optional dump-through
 

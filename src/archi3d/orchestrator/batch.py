@@ -7,10 +7,7 @@ and per-run manifests in runs/<run_id>/manifest.csv.
 
 from __future__ import annotations
 
-import re
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
+from datetime import UTC, datetime
 
 import pandas as pd
 
@@ -18,7 +15,6 @@ from archi3d.config.adapters_cfg import get_adapter_image_mode
 from archi3d.config.paths import PathResolver
 from archi3d.db.generations import compute_image_set_hash, compute_job_id, upsert_generations
 from archi3d.utils.io import append_log_record
-
 
 # -------------------------------
 # Image Selection Policy
@@ -100,10 +96,10 @@ def _select_algos_for_item(
 
 def _apply_filters(
     items_df: pd.DataFrame,
-    include: Optional[str] = None,
-    exclude: Optional[str] = None,
+    include: str | None = None,
+    exclude: str | None = None,
     with_gt_only: bool = False,
-    limit: Optional[int] = None,
+    limit: int | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """
     Apply filtering rules in order: include → exclude → with_gt_only → limit.
@@ -165,9 +161,9 @@ def create_batch(
     algos: list[str],
     paths: PathResolver,
     image_policy: str = "use_up_to_6",
-    limit: Optional[int] = None,
-    include: Optional[str] = None,
-    exclude: Optional[str] = None,
+    limit: int | None = None,
+    include: str | None = None,
+    exclude: str | None = None,
     with_gt_only: bool = False,
     dry_run: bool = False,
     algo_by_images: bool = False,
@@ -236,6 +232,24 @@ def create_batch(
     generation_records = []
     skip_reasons: dict[str, int] = {}
 
+    # Load existing jobs to avoid overwriting (preserves status of completed/failed jobs)
+    existing_job_keys: set[tuple[str, str]] = set()
+    generations_csv_path = paths.generations_csv_path()
+    if generations_csv_path.exists():
+        existing_df = pd.read_csv(
+            generations_csv_path,
+            dtype={"product_id": str, "variant": str, "run_id": str, "job_id": str},
+            encoding="utf-8-sig",
+            usecols=["run_id", "job_id"],
+        )
+        existing_job_keys = set(
+            zip(
+                existing_df["run_id"].astype(str),
+                existing_df["job_id"].astype(str),
+                strict=True,
+            )
+        )
+
     # Partition algorithms by image mode for ecotest
     single_algos = [a for a in algos if get_adapter_image_mode(a) == "single"]
     multi_algos = [a for a in algos if get_adapter_image_mode(a) == "multi"]
@@ -289,6 +303,11 @@ def create_batch(
         for algo in item_algos:
             job_id = compute_job_id(product_id, variant, algo, image_set_hash)
 
+            # Skip if job already exists (preserves status of completed/failed jobs)
+            if (run_id, job_id) in existing_job_keys:
+                skip_reasons["already_exists"] = skip_reasons.get("already_exists", 0) + 1
+                continue
+
             # Create generation record
             record = {
                 # Carry-over from parent (observability)
@@ -322,7 +341,7 @@ def create_batch(
                 "used_image_6_path": used_images_padded[5],
                 "image_set_hash": image_set_hash,
                 "status": "enqueued",
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "notes": "",
             }
 
@@ -337,7 +356,7 @@ def create_batch(
     # Build summary
     summary = {
         "event": "batch_create",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "run_id": run_id,
         "algos": algos,
         "algo_by_images": algo_by_images,
@@ -357,20 +376,12 @@ def create_batch(
         append_log_record(log_path, summary)
         return summary
 
-    # Write to generations.csv (atomic upsert)
+    # Write to generations.csv (atomic insert - no updates since we skip existing)
     if generation_records:
         generations_df = pd.DataFrame(generation_records)
         generations_csv_path = paths.generations_csv_path()
         inserted, updated = upsert_generations(generations_csv_path, generations_df)
-
-        # If all rows were updated (not inserted), count them as duplicate_job
-        if updated > 0 and inserted == 0:
-            all_skip_reasons["duplicate_job"] = updated
-            enqueued = inserted
-            skipped += updated
-            summary["enqueued"] = enqueued
-            summary["skipped"] = skipped
-            summary["skip_reasons"] = all_skip_reasons
+        # Note: updated should always be 0 since we skip existing jobs above
 
     # Write per-run manifest (derived from generations.csv)
     if generation_records:
