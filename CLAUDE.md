@@ -92,22 +92,48 @@ archi3d compute vfscore --run-id "test-run" --dry-run    # Preview VFScore compu
 ## Architecture
 
 ### Configuration System (3-Layer Merge + dotenv)
-The configuration system resolves workspace settings in priority order (highest to lowest):
-1. **Environment variable** `ARCHI3D_WORKSPACE` - for CI/CD and containers
-2. **`.env` file** in repository root - recommended for local development (auto-loaded via python-dotenv)
-3. **User config file** at platform-specific location:
+The configuration system separates secrets from configuration and resolves settings in priority order.
+
+**Configuration Files**:
+1. **`.env` file** (gitignored) - Secrets and machine-specific overrides:
+   - `ARCHI3D_WORKSPACE`: Workspace directory path (REQUIRED)
+   - `FAL_KEY`: fal.ai API credentials (REQUIRED for most adapters)
+   - `ARCHI3D_WORKER_ID`: Optional worker identity override
+   - `ARCHI3D_COMMIT`: Optional git commit hash (auto-populated in CI)
+
+2. **`global.yaml`** (checked into git) - Project-wide configuration:
+   - Enabled algorithms list
+   - Quality thresholds (LPIPS, FScore)
+   - Batch creation policies
+   - **Tool paths** (Blender, etc.) - defaults for standard installations
+   - **Metrics defaults** (FScore/VFScore parameters)
+
+3. **User config file** (optional, platform-specific) - Per-user overrides:
    - Windows: `%LOCALAPPDATA%/archi3d/archi3d/config.yaml`
    - Linux: `~/.config/archi3d/config.yaml`
    - macOS: `~/Library/Application Support/archi3d/config.yaml`
+   - **Tool path overrides** for non-standard installations
 
-Global project settings (algorithms, thresholds, batch policies) are loaded from `global.yaml` in the repo root.
+**Workspace Resolution Precedence** (highest to lowest):
+1. Environment variable `ARCHI3D_WORKSPACE` (system-level)
+2. `.env` file in repository root (auto-loaded via python-dotenv)
+3. User config file workspace setting
 
-Configuration is loaded via `archi3d.config.loader.load_config()` which:
+**Tool Path Resolution Precedence** (highest to lowest):
+1. User config `tools` section (e.g., custom Blender path)
+2. Global config `tools` section (standard installation paths)
+
+**Configuration Loading** (`archi3d.config.loader.load_config()`):
 1. Finds the repo root (via pyproject.toml/global.yaml sentinel)
 2. Loads `.env` file if present (populates `os.environ`)
 3. Loads `global.yaml` for project settings
 4. Loads user config from platformdirs location
 5. Applies environment variable overrides
+
+**Tool Path Access** (`archi3d.config.loader.get_tool_path()`):
+- Get effective tool path with user config overrides
+- Example: `blender_exe = get_tool_path(config, "blender_exe")`
+- Returns `Path` object, respecting user overrides if set
 
 Validated using Pydantic models in `archi3d.config.schema`. The `PathResolver` (in `archi3d.config.paths`) translates the workspace root into all derived paths (`dataset/`, `runs/`, `tables/`, `reports/`, `logs/`).
 

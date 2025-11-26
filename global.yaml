@@ -1,4 +1,10 @@
-# Global (repo) configuration for Archi3D
+# =============================================================================
+# archi3D Global Configuration (Project Settings)
+# =============================================================================
+# This file is checked into git and shared across all developers.
+# Machine-specific settings should go in .env or user config.
+
+# --- Enabled Algorithms ---
 algorithms:
   - trellis_multi_stochastic
   - trellis_multi_multidiffusion
@@ -11,9 +17,30 @@ algorithms:
   - hunyuan3d_v2_single
   - hunyuan3d_v2p1_single
 
+# --- Quality Thresholds ---
+# (Note: Currently defined but may not be actively enforced.
+#  Kept for future use in gating/reporting.)
 thresholds:
-  lpips_max: 0.15
-  fscore_min: 0.65
+  lpips_max: 0.15  # Max acceptable LPIPS (lower is better)
+  fscore_min: 0.65  # Min acceptable F-score in [0,1]
 
+# --- Batch Creation Settings ---
 batch:
-  single_image_policy: exact_one   # exact_one | allow_any
+  single_image_policy: exact_one  # exact_one | allow_any
+
+# --- External Tool Paths ---
+# Default paths work for standard Windows installations.
+# Override in user config (~/.config/archi3d/config.yaml) if needed.
+# Linux/macOS users should override blender_exe in their user config.
+tools:
+  blender_exe: "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe"
+
+# --- Metrics Configuration ---
+metrics:
+  fscore:
+    default_n_points: 100000  # Poisson disk samples per mesh
+    default_timeout_s: 300    # Per-job timeout (5 minutes)
+
+  vfscore:
+    default_repeats: 1        # LLM scoring repeats (objective2 uses 1)
+    default_timeout_s: 600    # Per-job timeout (10 minutes)

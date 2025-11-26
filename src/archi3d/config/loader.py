@@ -189,6 +189,10 @@ def load_config(start: Path | None = None) -> EffectiveConfig:
       2. .env file in repo root (loaded into os.environ)
       3. User config file (platform-specific location)
 
+    Tool paths precedence (highest to lowest):
+      1. User config tools overrides
+      2. Global config tools defaults
+
     The .env file is loaded early, so ARCHI3D_WORKSPACE in .env works seamlessly.
     System-level env vars always take precedence over .env values.
 
@@ -225,3 +229,34 @@ def load_config(start: Path | None = None) -> EffectiveConfig:
             "Please create it or point to the correct location."
         )
     return eff
+
+
+def get_tool_path(config: EffectiveConfig, tool_name: str) -> Path:
+    """
+    Get effective tool path with user config overrides.
+
+    Tool paths are resolved with the following precedence:
+      1. User config tools override (if set)
+      2. Global config tools default
+
+    Args:
+        config: Loaded configuration
+        tool_name: Name of the tool (e.g., "blender_exe")
+
+    Returns:
+        Path to the tool
+
+    Raises:
+        AttributeError: If tool_name doesn't exist in ToolPaths schema
+    """
+    # Start with global default
+    global_tools = config.global_config.tools
+    tool_path = getattr(global_tools, tool_name)
+
+    # Override with user config if present
+    if config.user_config and config.user_config.tools:
+        user_override = getattr(config.user_config.tools, tool_name, None)
+        if user_override is not None:
+            tool_path = user_override
+
+    return Path(tool_path)

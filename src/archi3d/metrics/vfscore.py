@@ -24,7 +24,7 @@ from typing import Any
 
 import pandas as pd
 
-from archi3d.config.loader import load_config
+from archi3d.config.loader import load_config, get_tool_path
 from archi3d.config.paths import PathResolver
 from archi3d.metrics.vfscore_adapter import VFScoreRequest, VFScoreResponse, evaluate_vfscore
 from archi3d.utils.io import append_log_record, update_csv_atomic
@@ -173,6 +173,7 @@ def _process_job(
     timeout_s: int | None,
     paths: PathResolver,
     dry_run: bool,
+    blender_exe: Path,
 ) -> dict[str, Any]:
     """
     Process a single job: invoke VFScore evaluator and prepare upsert data.
@@ -184,6 +185,7 @@ def _process_job(
         timeout_s: Per-job timeout in seconds
         paths: PathResolver for path resolution
         dry_run: If True, skip actual evaluation
+        blender_exe: Path to Blender executable (from config)
 
     Returns:
         Dict with result data for upserting to CSV:
@@ -278,6 +280,7 @@ def _process_job(
             repeats=repeats,
             timeout_s=timeout_s,
             workspace=paths.workspace_root,
+            blender_exe=blender_exe,
         )
         response: VFScoreResponse = evaluate_vfscore(req)
 
@@ -459,6 +462,7 @@ def compute_vfscore(
     # Load config and paths
     cfg = load_config()
     paths = PathResolver(cfg)
+    blender_exe = get_tool_path(cfg, "blender_exe")
 
     # Parse status filter
     status_list = [s.strip() for s in only_status.split(",") if s.strip()]
@@ -554,6 +558,7 @@ def compute_vfscore(
                 timeout_s=timeout_s,
                 paths=paths,
                 dry_run=dry_run,
+                blender_exe=blender_exe,
             )
             results.append(result)
 
@@ -577,6 +582,7 @@ def compute_vfscore(
                     timeout_s=timeout_s,
                     paths=paths,
                     dry_run=dry_run,
+                    blender_exe=blender_exe,
                 ): row
                 for row in eligible_rows
             }
