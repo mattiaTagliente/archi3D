@@ -93,9 +93,9 @@ def _get_reference_images(
     else:  # source
         prefix = "source_image_"
 
-    # Collect image paths (typically 6 columns: A-F)
-    for suffix in ["a", "b", "c", "d", "e", "f"]:
-        col_name = f"{prefix}{suffix}"
+    # Collect image paths (typically 6 columns: numbered 1-6 with _path suffix)
+    for num in range(1, 7):
+        col_name = f"{prefix}{num}_path"
         if col_name in row and pd.notna(row[col_name]):
             img_rel_path = row[col_name]
             img_abs_path = paths.workspace_root / img_rel_path
@@ -199,13 +199,54 @@ def _process_job(
     job_id = row["job_id"]
     run_id = row["run_id"]
 
-    # Prepare result dict with key columns
+    # Prepare result dict with key columns (comprehensive objective2 schema)
     result = {
+        # Key columns
         "run_id": run_id,
         "job_id": job_id,
+
+        # Status
         "vf_status": "error",
         "vf_error": None,
+
+        # Core metrics
         "vfscore_overall": None,
+        "vf_lpips_distance": None,
+        "vf_lpips_model": None,
+        "vf_iou": None,
+        "vf_mask_error": None,
+        "vf_pose_confidence": None,
+
+        # Score combination parameters
+        "vf_gamma": None,
+        "vf_pose_compensation_c": None,
+
+        # Final pose parameters
+        "vf_azimuth_deg": None,
+        "vf_elevation_deg": None,
+        "vf_radius": None,
+        "vf_fov_deg": None,
+        "vf_obj_yaw_deg": None,
+
+        # Pipeline statistics
+        "vf_pipeline_mode": None,
+        "vf_num_step2_candidates": None,
+        "vf_num_step4_candidates": None,
+        "vf_num_selected_candidates": None,
+        "vf_best_lpips_idx": None,
+
+        # Performance & provenance
+        "vf_render_runtime_s": None,
+        "vf_scoring_runtime_s": None,
+        "vf_tool_version": None,
+        "vf_config_hash": None,
+
+        # Artifact paths
+        "vf_artifacts_dir": None,
+        "vf_gt_image_path": None,
+        "vf_render_image_path": None,
+
+        # DEPRECATED fields (kept for backward compatibility)
         "vf_finish": None,
         "vf_texture_identity": None,
         "vf_texture_scale_placement": None,
@@ -214,9 +255,6 @@ def _process_job(
         "vf_std": None,
         "vf_llm_model": None,
         "vf_rubric_json": None,
-        "vf_render_runtime_s": None,
-        "vf_scoring_runtime_s": None,
-        "vf_config_hash": None,
         "vf_rationales_dir": None,
     }
 
@@ -246,7 +284,12 @@ def _process_job(
         if not response.ok:
             # Evaluation failed
             result["vf_status"] = "error"
-            result["vf_error"] = response.error[:2000] if response.error else "unknown_error"
+            result["vf_error"] = response.error if response.error else "VFScore error (unknown)"
+            # Log full error for debugging
+            import sys
+            print(f"\n=== VFScore evaluation failed for job {job_id} ===", file=sys.stderr)
+            print(response.error, file=sys.stderr)
+            print("=" * 80, file=sys.stderr)
             return result
 
         # Success: extract payload
@@ -269,33 +312,61 @@ def _process_job(
         with open(config_json_path, "w", encoding="utf-8") as f:
             json.dump(config_data, f, indent=2)
 
-        # Populate result dict with metrics
+        # Populate result dict with comprehensive objective2 metrics
         result["vf_status"] = "ok"
-        result["vfscore_overall"] = payload.get("vfscore_overall_median")
 
-        # Subscores
+        # Core metrics
+        result["vfscore_overall"] = payload.get("vfscore_overall_median")
+        result["vf_lpips_distance"] = payload.get("lpips_distance")
+        result["vf_lpips_model"] = payload.get("lpips_model")
+        result["vf_iou"] = payload.get("iou")
+        result["vf_mask_error"] = payload.get("mask_error")
+        result["vf_pose_confidence"] = payload.get("pose_confidence")
+
+        # Score combination parameters
+        result["vf_gamma"] = payload.get("gamma")
+        result["vf_pose_compensation_c"] = payload.get("pose_compensation_c")
+
+        # Final pose parameters
+        result["vf_azimuth_deg"] = payload.get("azimuth_deg")
+        result["vf_elevation_deg"] = payload.get("elevation_deg")
+        result["vf_radius"] = payload.get("radius")
+        result["vf_fov_deg"] = payload.get("fov_deg")
+        result["vf_obj_yaw_deg"] = payload.get("obj_yaw_deg")
+
+        # Pipeline statistics
+        result["vf_pipeline_mode"] = payload.get("pipeline_mode")
+        result["vf_num_step2_candidates"] = payload.get("num_step2_candidates")
+        result["vf_num_step4_candidates"] = payload.get("num_step4_candidates")
+        result["vf_num_selected_candidates"] = payload.get("num_selected_candidates")
+        result["vf_best_lpips_idx"] = payload.get("best_lpips_idx")
+
+        # Performance & provenance
+        result["vf_render_runtime_s"] = response.render_runtime_s
+        result["vf_scoring_runtime_s"] = response.scoring_runtime_s
+        result["vf_tool_version"] = response.tool_version
+        result["vf_config_hash"] = response.config_hash
+
+        # Artifact paths (workspace-relative)
+        result["vf_artifacts_dir"] = payload.get("artifacts_dir")
+        result["vf_gt_image_path"] = payload.get("gt_image_path")
+        result["vf_render_image_path"] = payload.get("render_image_path")
+
+        # DEPRECATED fields (kept for backward compatibility)
         subscores = payload.get("vf_subscores_median", {})
         result["vf_finish"] = subscores.get("finish")
         result["vf_texture_identity"] = subscores.get("texture_identity")
         result["vf_texture_scale_placement"] = subscores.get("texture_scale_placement")
 
-        # Stats
         result["vf_repeats_n"] = payload.get("repeats_n", repeats)
         result["vf_iqr"] = payload.get("iqr")
         result["vf_std"] = payload.get("std")
-
-        # Provenance
         result["vf_llm_model"] = payload.get("llm_model")
 
-        # Rubric weights as compact JSON
+        # Rubric weights as compact JSON (deprecated)
         rubric = payload.get("rubric_weights", {})
         if rubric:
             result["vf_rubric_json"] = json.dumps(rubric, separators=(",", ":"))
-
-        # Runtime
-        result["vf_render_runtime_s"] = response.render_runtime_s
-        result["vf_scoring_runtime_s"] = response.scoring_runtime_s
-        result["vf_config_hash"] = response.config_hash
 
         # Rationales directory (relative to workspace)
         rationales_dir = out_dir / "rationales"
@@ -307,7 +378,7 @@ def _process_job(
     except Exception as e:
         # Unexpected error
         result["vf_status"] = "error"
-        result["vf_error"] = f"Unexpected error: {str(e)[:2000]}"
+        result["vf_error"] = f"Unexpected: {str(e)[:180]}"
         logger.exception(f"Unexpected error processing job {job_id}")
         return result
 
@@ -317,11 +388,12 @@ def compute_vfscore(
     jobs: str | None = None,
     only_status: str = "completed",
     use_images_from: str = "used",
-    repeats: int = 3,
+    repeats: int = 1,
     redo: bool = False,
     max_parallel: int = 1,
     timeout_s: int | None = None,
     dry_run: bool = False,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """
     Compute VFScore metrics for eligible jobs in a run.
@@ -336,6 +408,7 @@ def compute_vfscore(
         max_parallel: Maximum parallel jobs (default: 1)
         timeout_s: Optional per-job timeout in seconds
         dry_run: Preview selection without running evaluator (default: False)
+        limit: Optional limit on number of jobs to process (default: None = all)
 
     Returns:
         Summary dict with:
@@ -349,7 +422,36 @@ def compute_vfscore(
             "avg_scoring_runtime_s": float,
             ...
         }
+
+    Raises:
+        RuntimeError: If VFScore is not installed
     """
+    # Windows DLL fix: Add torch lib to PATH before importing vfscore
+    # This must happen BEFORE any vfscore import to ensure DLLs load correctly
+    import sys
+    import os
+    if sys.platform == "win32":
+        from pathlib import Path as PathLib
+        torch_lib_path = PathLib(sys.prefix) / "Lib" / "site-packages" / "torch" / "lib"
+        if torch_lib_path.exists():
+            # Add to PATH (for Windows DLL discovery)
+            torch_lib_str = str(torch_lib_path)
+            if torch_lib_str not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = torch_lib_str + os.pathsep + os.environ.get("PATH", "")
+            # Also use os.add_dll_directory for Python 3.8+
+            try:
+                os.add_dll_directory(torch_lib_str)
+            except (OSError, AttributeError):
+                pass  # Ignore if add_dll_directory not available or fails
+
+    # Early check: Verify VFScore is available (always, even in dry-run)
+    try:
+        import vfscore  # noqa: F401
+    except ImportError as e:
+        raise RuntimeError(
+            "VFScore not installed. See quickstart.md for installation instructions."
+        ) from e
+
     # Validate use_images_from
     if use_images_from not in ["used", "source"]:
         raise ValueError(f"use_images_from must be 'used' or 'source', got: {use_images_from}")
@@ -403,6 +505,11 @@ def compute_vfscore(
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
 
     n_selected = len(eligible_rows)
+
+    # Apply limit if specified
+    if limit is not None and limit > 0:
+        eligible_rows = eligible_rows[:limit]
+        logger.info(f"Applied limit: processing {len(eligible_rows)} of {n_selected} eligible jobs")
 
     logger.info(f"Selected {n_selected} eligible jobs for VFScore computation")
     if skip_reasons:
@@ -495,7 +602,7 @@ def compute_vfscore(
                         "run_id": run_id,
                         "job_id": row["job_id"],
                         "vf_status": "error",
-                        "vf_error": f"Processing exception: {str(e)[:2000]}",
+                        "vf_error": f"Processing failed: {str(e)[:180]}",
                     }
                     results.append(error_result)
                     counters["error"] = counters.get("error", 0) + 1

@@ -47,75 +47,75 @@ def _normalize_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """
     Normalize VFScore tool output into canonical payload schema.
 
-    Expected canonical schema:
-    {
-      "vfscore_overall_median": int (0-100),
-      "vf_subscores_median": {
-        "finish": int,
-        "texture_identity": int,
-        "texture_scale_placement": int
-      },
-      "repeats_n": int,
-      "scores_all": [int, ...],
-      "subscores_all": [
-        {"finish": int, "texture_identity": int, "texture_scale_placement": int},
-        ...
-      ],
-      "iqr": float,
-      "std": float,
-      "llm_model": str,
-      "rubric_weights": {
-        "finish": float,
-        "texture_identity": float,
-        "texture_scale_placement": float
-      },
-      "render_settings": {
-        "engine": "cycles",
-        "hdri": str,
-        "camera": str,
-        "seed": int
-      }
-    }
+    Objective2 pipeline schema (NEW):
+    - Core metrics: vfscore_overall, lpips_distance, lpips_model, iou, mask_error, pose_confidence
+    - Score params: gamma, pose_compensation_c
+    - Pose params: azimuth_deg, elevation_deg, radius, fov_deg, obj_yaw_deg
+    - Pipeline stats: pipeline_mode, num_step2_candidates, num_step4_candidates, num_selected_candidates, best_lpips_idx
+    - Provenance: artifacts_dir, gt_image_path, render_image_path
+
+    Legacy fields (DEPRECATED, kept for backward compatibility):
+    - vf_subscores_median, repeats_n, scores_all, subscores_all, iqr, std
+    - llm_model, rubric_weights, render_settings
 
     Missing fields are filled with None.
     """
     normalized = {
+        # Core metrics
         "vfscore_overall_median": raw.get("vfscore_overall_median"),
-        "vf_subscores_median": {
+        "lpips_distance": raw.get("lpips_distance"),
+        "lpips_model": raw.get("lpips_model"),
+        "iou": raw.get("iou"),
+        "mask_error": raw.get("mask_error"),
+        "pose_confidence": raw.get("pose_confidence"),
+
+        # Score combination parameters
+        "gamma": raw.get("gamma"),
+        "pose_compensation_c": raw.get("pose_compensation_c"),
+
+        # Final pose parameters
+        "azimuth_deg": raw.get("azimuth_deg"),
+        "elevation_deg": raw.get("elevation_deg"),
+        "radius": raw.get("radius"),
+        "fov_deg": raw.get("fov_deg"),
+        "obj_yaw_deg": raw.get("obj_yaw_deg"),
+
+        # Pipeline statistics
+        "pipeline_mode": raw.get("pipeline_mode"),
+        "num_step2_candidates": raw.get("num_step2_candidates"),
+        "num_step4_candidates": raw.get("num_step4_candidates"),
+        "num_selected_candidates": raw.get("num_selected_candidates"),
+        "best_lpips_idx": raw.get("best_lpips_idx"),
+
+        # Artifact paths (workspace-relative)
+        "artifacts_dir": raw.get("artifacts_dir"),
+        "gt_image_path": raw.get("gt_image_path"),
+        "render_image_path": raw.get("render_image_path"),
+
+        # DEPRECATED fields (kept for backward compatibility)
+        "vf_subscores_median": raw.get("vf_subscores_median", {
             "finish": None,
             "texture_identity": None,
             "texture_scale_placement": None,
-        },
+        }),
         "repeats_n": raw.get("repeats_n"),
         "scores_all": raw.get("scores_all", []),
         "subscores_all": raw.get("subscores_all", []),
         "iqr": raw.get("iqr"),
         "std": raw.get("std"),
         "llm_model": raw.get("llm_model"),
-        "rubric_weights": {
+        "rubric_weights": raw.get("rubric_weights", {
             "finish": None,
             "texture_identity": None,
             "texture_scale_placement": None,
-        },
-        "render_settings": {
-            "engine": "cycles",
+        }),
+        "render_settings": raw.get("render_settings", {
+            "engine": "pyrender",
             "hdri": None,
             "camera": None,
             "seed": None,
-        },
+        }),
     }
-
-    # Merge subscores if present
-    if "vf_subscores_median" in raw and raw["vf_subscores_median"]:
-        normalized["vf_subscores_median"].update(raw["vf_subscores_median"])
-
-    # Merge rubric_weights if present
-    if "rubric_weights" in raw and raw["rubric_weights"]:
-        normalized["rubric_weights"].update(raw["rubric_weights"])
-
-    # Merge render_settings if present
-    if "render_settings" in raw and raw["render_settings"]:
-        normalized["render_settings"].update(raw["render_settings"])
 
     return normalized
 
@@ -140,6 +140,7 @@ def _try_import_api(req: VFScoreRequest) -> VFScoreResponse | None:
             out_dir=str(req.out_dir),
             repeats=req.repeats,
             timeout_s=req.timeout_s,
+            workspace=str(req.workspace) if req.workspace else None,
         )
         total_runtime = time.perf_counter() - start_total
 
@@ -168,9 +169,12 @@ def _try_import_api(req: VFScoreRequest) -> VFScoreResponse | None:
     except ImportError:
         return None  # Import failed, will try CLI fallback
     except Exception as e:
+        # Include exception type and full traceback for debugging
+        import traceback
+        tb_str = traceback.format_exc()
         return VFScoreResponse(
             ok=False,
-            error=f"VFScore import API error: {str(e)[:500]}",
+            error=f"VFScore error: {str(e)}\nTraceback:\n{tb_str}",
         )
 
 
@@ -243,16 +247,16 @@ def _try_cli_invocation(req: VFScoreRequest) -> VFScoreResponse:
         )
 
     except subprocess.TimeoutExpired:
-        return VFScoreResponse(ok=False, error="timeout")
+        return VFScoreResponse(ok=False, error="VFScore timeout")
     except subprocess.CalledProcessError as e:
         return VFScoreResponse(
             ok=False,
-            error=f"VFScore CLI failed (exit {e.returncode}): {e.stderr[:500]}",
+            error=f"VFScore failed (exit {e.returncode}): {e.stderr[:150]}",
         )
     except Exception as e:
         return VFScoreResponse(
             ok=False,
-            error=f"VFScore CLI error: {str(e)[:500]}",
+            error=f"VFScore error: {str(e)[:200]}",
         )
 
 

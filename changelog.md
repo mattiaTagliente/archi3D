@@ -1,5 +1,330 @@
 ## Implementation Status
 
+### Windows PyTorch DLL Loading Fix (2025-11-26) ✅ RESOLVED
+
+**Problem**: VFScore evaluation failed on Windows with DLL initialization error:
+```
+OSError: [WinError 1114] A dynamic link library (DLL) initialization routine failed.
+Error loading "C:\Users\matti\venvs\archi3D\Lib\site-packages\torch\lib\c10.dll" or one of its dependencies.
+```
+
+**Traceback Analysis**:
+```python
+File "src/vfscore/evaluator.py", line 76, in vfscore.evaluator.evaluate_visual_fidelity
+File "vfscore/objective2/__init__.py", line 18, in <module>
+    from vfscore.objective2.pipeline_objective2 import (
+File "src/vfscore/objective2/pipeline_objective2.py", line 30, in init
+File "src/vfscore/objective2/lpips_score.py", line 7, in init
+File "lpips/__init__.py", line 7, in <module>
+    import torch
+File "torch/__init__.py", line 281, in <module>
+    _load_dll_libraries()
+File "torch/__init__.py", line 264, in _load_dll_libraries
+    raise err  # Error loading c10.dll
+```
+
+**Root Cause**:
+1. VFScore's compiled `.pyd` modules have lazy imports - `import torch` happens when `evaluate_visual_fidelity()` is CALLED, not when the module is imported
+2. By that point, Windows DLL search path is already locked
+3. Even though `sitecustomize.py` added torch's lib directory via `os.add_dll_directory()`, torch's own `_load_dll_libraries()` fails
+4. Torch iterates through all DLLs in `torch/lib/` and tries to load them with `kernel32.LoadLibraryExW(dll, None, 0x00001100)`
+5. The flags `0x00001100` = `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`
+6. This search mode doesn't respect `os.add_dll_directory()` when called after Python's import system is already active
+
+**Why Simple Tests Worked But archi3d Failed**:
+- `python test_torch_import.py` works: Direct `import torch` before any compiled modules load
+- `python test_vfscore_import.py` works: Calls `os.add_dll_directory()` then imports vfscore
+- `archi3d compute vfscore` fails: Lazy import of torch happens deep inside compiled vfscore code, AFTER import chain starts
+
+**Solution**: Pre-import torch in `sitecustomize.py` to force all DLL loading at Python startup:
+
+```python
+# sitecustomize.py (in site-packages)
+if sys.platform == "win32":
+    import pathlib
+    torch_lib_path = pathlib.Path(sys.prefix) / "Lib" / "site-packages" / "torch" / "lib"
+
+    if torch_lib_path.exists():
+        # Add to PATH
+        torch_lib_str = str(torch_lib_path)
+        if torch_lib_str not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = torch_lib_str + os.pathsep + os.environ.get("PATH", "")
+
+        # Use os.add_dll_directory
+        try:
+            os.add_dll_directory(torch_lib_str)
+        except (OSError, AttributeError):
+            pass
+
+        # *** CRITICAL: Pre-import torch to force DLL loading NOW ***
+        # This ensures all torch DLLs are loaded with the correct search path
+        # BEFORE any compiled vfscore modules try to import torch
+        try:
+            import torch  # noqa: F401
+            _ = torch.__version__  # Force initialization
+        except Exception:
+            pass  # Let it fail later with better error context
+```
+
+**Why This Works**:
+- `sitecustomize.py` runs automatically at Python startup, BEFORE any user code
+- Pre-importing torch loads all DLLs (c10.dll, torch.dll, etc.) with the correct search path
+- When vfscore's compiled modules later do `import torch`, the module is already loaded
+- No DLL loading happens during vfscore execution - torch is already initialized
+
+**Files Modified**:
+- `C:\Users\matti\venvs\archi3D\Lib\site-packages\sitecustomize.py`: Added torch pre-import (lines 35-44)
+
+**Result**:
+- ✅ VFScore evaluation now works without DLL errors
+- ✅ Torch DLLs load correctly at Python startup
+- ✅ Solution is transparent - no changes to archi3D or VFScore code needed
+- ✅ Works for both `archi3d` command and `python -m archi3d`
+
+---
+
+### Dry-Run Availability Check Fix (2025-11-26)
+
+**Problem**: The early availability checks for FScore and VFScore were being skipped during `--dry-run` mode:
+
+```python
+if not dry_run:
+    try:
+        import fscore
+    except ImportError as e:
+        raise RuntimeError("FScore not installed...")
+```
+
+This created a **misleading user experience**:
+- User runs `archi3d compute fscore --dry-run` without FScore installed
+- Command succeeds, shows jobs would be processed
+- User thinks environment is configured correctly
+- User removes `--dry-run` flag
+- Command fails with "FScore not installed" error
+
+**Root Cause**: The check was intentionally skipped to allow previewing selection logic without requiring the tools, but this meant users couldn't validate their environment setup with dry-run.
+
+**Solution**: Remove the `if not dry_run:` condition so the availability check **always runs**, even in dry-run mode. The `--dry-run` flag should only skip the actual evaluator calls, not the basic environment validation.
+
+**Files Modified**:
+- `src/archi3d/metrics/fscore.py:387-393`: Removed `if not dry_run` wrapper
+- `src/archi3d/metrics/vfscore.py:358-364`: Removed `if not dry_run` wrapper
+
+**Result**: Now both commands fail fast with clear error messages if the required module is missing, regardless of `--dry-run` flag. Users can confidently use dry-run to validate their environment before running expensive computations.
+
+---
+
+### VFScore Pydantic Validation Fix (2025-11-26)
+
+**Problem**: After installing the VFScore wheel (v0.2.0), users encountered a Pydantic validation error:
+```
+VFScore error: A non-annotated attribute was detected: `get_project_root = <cyfunction Config.get_project_root at 0x...>`.
+All model fields require a type annotation
+```
+
+**Root Cause**:
+- VFScore's `Config` class (Pydantic BaseModel) contained methods like `load()`, `get_project_root()`, and `resolve_paths()`
+- When Cython compiles these methods, they become `cyfunction` objects attached to the class
+- Pydantic v2's model introspection sees these as class attributes without type annotations
+- Pydantic tries to validate them as fields, causing "A non-annotated attribute was detected" error
+- **Neither `extra="allow"` nor `extra="ignore"` prevents this** - Pydantic still sees the cythonized methods
+
+**Solution**: Extract all methods as module-level functions - keep the Config class as pure data:
+
+```python
+# config.py - BEFORE (fails with Cython - methods become cyfunction objects)
+class Config(BaseModel):
+    model_config = ConfigDict(...)
+
+    paths: PathsConfig = Field(default_factory=PathsConfig)
+
+    @classmethod
+    def load(cls, config_path: Path | str = "config.yaml") -> "Config":
+        ...
+
+    def get_project_root(self) -> Path:
+        ...
+
+    def resolve_paths(self, project_root: Path | None = None) -> None:
+        ...
+
+# config.py - AFTER (Cython compatible - no methods, only data fields)
+class Config(BaseModel):
+    model_config = ConfigDict(...)
+
+    paths: PathsConfig = Field(default_factory=PathsConfig)
+    # No methods!
+
+# Module-level functions (not compiled as class methods)
+def load_config_from_file(config_path: Path | str = "config.yaml") -> Config:
+    ...
+
+def get_project_root_for_config(config: Config) -> Path:
+    ...
+
+def resolve_config_paths(config: Config, project_root: Path | None = None) -> None:
+    ...
+```
+
+**Rationale**:
+- Pydantic BaseModel classes with methods are fundamentally incompatible with Cython compilation
+- The Config dict settings (`extra="allow"`, `extra="ignore"`) don't solve the cyfunction detection issue
+- **Proper solution**: Separate data (Config class) from behavior (module functions)
+- Module-level functions compile correctly and don't interfere with Pydantic introspection
+- This is actually cleaner architecture - Config becomes a pure data container
+- **Both `config.py` AND `evaluator.py` can now be compiled**, protecting IP
+
+**Result**:
+- ✅ VFScore wheel loads successfully without Pydantic validation errors
+- ✅ Config is now a pure Pydantic data model (no methods)
+- ✅ All functionality preserved via module-level functions
+- ✅ config.py is compiled to .pyd, protecting IP
+- ✅ Clean separation of data (Config) and behavior (functions)
+
+**Files Modified**:
+- `src/vfscore/config.py:274-287`: Removed all methods from Config class
+- `src/vfscore/config.py:318-382`: Added module-level functions `load_config_from_file()`, `get_project_root_for_config()`, `resolve_config_paths()`
+- `src/vfscore/config.py:389-403`: Updated `get_config()` and `reload_config()` to use new function names
+- `setup.py:12`: Re-enabled config.py compilation
+
+---
+
+### VFScore Windows PyTorch DLL Loading Fix (2025-11-26)
+
+**Problem**: After fixing the Pydantic error, VFScore evaluation on Windows still failed with:
+```
+VFScore error: [WinError 1114] A dynamic link library (DLL) initialization routine failed.
+Error loading "C:\Users\matti\venvs\archi3D\Lib\site-packages\torch\lib\c10.dll" or one of its dependencies.
+```
+
+**Root Cause**:
+- VFScore's `objective2.lpips_score` module imports PyTorch at module level (line 9: `import torch`)
+- `lpips_score.py` is compiled to Cython (becomes `lpips_score.pyd`)
+- On Windows, PyTorch's C extension DLLs (`c10.dll`, etc.) require their containing directory to be in the DLL search path
+- When importing from compiled Cython modules, Windows doesn't automatically add torch's lib directory to the search path
+- The DLL fix was initially added to `evaluator.py`, but **`evaluator.py` was also being compiled to Cython**, so the fix code was converted to C and didn't run before the torch import
+
+**Solution**: Two-step fix in `__init__.py` - add DLL directory AND pre-import torch:
+
+```python
+# src/vfscore/__init__.py (lines 8-23)
+if sys.platform == "win32":
+    # Step 1: Add torch DLL directory to search path
+    import pathlib
+    torch_lib_path = pathlib.Path(sys.prefix) / "Lib" / "site-packages" / "torch" / "lib"
+    if torch_lib_path.exists():
+        os.add_dll_directory(str(torch_lib_path))
+
+    # Step 2: Pre-import torch to force DLL loading BEFORE vfscore's compiled modules
+    # This ensures c10.dll and other torch DLLs are loaded with the correct search path
+    try:
+        import torch
+        _ = torch.__version__  # Force initialization
+    except Exception:
+        pass  # Let it fail later with better error context
+
+# Import happens AFTER torch is pre-loaded
+from vfscore.evaluator import evaluate_visual_fidelity
+```
+
+**Rationale**:
+- `os.add_dll_directory()` only affects DLLs loaded AFTER the call
+- The compiled vfscore modules (evaluator.pyd, pipeline_objective2.pyd, lpips_score.pyd) form an import chain
+- When evaluator.pyd imports pipeline_objective2.pyd imports lpips_score.pyd imports torch, the DLLs haven't loaded yet
+- **Key insight**: Pre-importing torch forces Windows to load c10.dll and other torch DLLs with the updated search path
+- Then when compiled vfscore modules import torch, the DLLs are already loaded
+- `__init__.py` is NOT compiled (standard practice), so this runs as pure Python
+- **Both `evaluator.py` AND `config.py` remain compiled**, protecting IP
+
+**Files Modified**:
+- `src/vfscore/__init__.py:8-23`: Added two-step DLL fix (add directory + pre-import torch)
+- `setup.py:12`: `evaluator.py` compilation enabled (protecting IP)
+
+**Status**: ✅ Complete. Proper fix implemented, ready for wheel rebuild/testing.
+
+---
+
+### FScore & VFScore Early Availability Check + Concise Error Messages (2025-11-26)
+
+**Problem**:
+1. FScore had same issue as VFScore - no early check if module is installed
+2. Error messages saved to CSV were too verbose (500-2000 chars), cluttering generations.csv
+3. Console error messages were unnecessarily verbose
+
+**Solution**:
+
+1. **Added Early FScore Availability Check** (`src/archi3d/metrics/fscore.py:387-394`):
+   ```python
+   if not dry_run:
+       try:
+           import fscore
+       except ImportError as e:
+           raise RuntimeError(
+               "FScore not installed. See quickstart.md for installation instructions."
+           ) from e
+   ```
+
+2. **Made All Error Messages Concise** (200 char max):
+   - FScore adapter: `"FScore error: ..."` (was `"FScore import API error: ..."`)
+   - VFScore adapter: `"VFScore error: ..."` (was `"VFScore import API error: ..."`)
+   - Timeout errors: `"FScore timeout"` / `"VFScore timeout"` (was `"timeout"`)
+   - Unexpected errors: `"Unexpected: {e[:180]}"` (was `"Unexpected error: {e[:2000]}"`)
+   - Processing failures: `"Processing failed: {e[:180]}"` (was `"Processing exception: {e[:2000]}"`)
+   - Unknown errors: `"FScore error (unknown)"` (was `"unknown_error"`)
+
+3. **Updated Both Compute Functions**:
+   - Console error message now concise: `"FScore not installed. See quickstart.md..."`
+   - Same format for both FScore and VFScore for consistency
+
+**Result**:
+- Clear, immediate feedback if wheels not installed
+- CSV error columns remain readable with concise messages
+- Console errors reference quickstart.md for installation help
+
+---
+
+### VFScore Reference Image Fix (2025-11-26)
+
+**Problem**: After fixing VFScore configuration integration, users reported `no_reference_images_found` error even without VFScore installed. This revealed two issues:
+1. The command would proceed with 0 eligible jobs without warning about missing VFScore
+2. Column name mismatch: code expected `used_image_a/b/c` but CSV had `used_image_1/2/3_path`
+
+**Root Cause Analysis**:
+- Error occurred in eligibility check (`_get_reference_images()`) BEFORE VFScore invocation
+- `_get_reference_images()` looked for lettered columns (`_a`, `_b`, `_c`, etc.)
+- Actual CSV columns from batch creator: `used_image_1_path`, `used_image_2_path`, etc.
+- No early validation that VFScore wheel was installed
+
+**Solution** (`src/archi3d/metrics/vfscore.py`):
+
+1. **Early VFScore Availability Check** (lines 358-367):
+   - Added check at start of `compute_vfscore()` function
+   - Attempts `import vfscore` before processing any jobs
+   - Raises clear `RuntimeError` with installation instructions if missing
+   - Skipped in dry-run mode to allow previewing without VFScore
+
+2. **Fixed Column Name Lookup** (lines 96-103):
+   - Changed from lettered suffixes (`a`, `b`, `c`) to numbered (`1`, `2`, `3`)
+   - Changed from no suffix to `_path` suffix
+   - Updated comment to document actual column naming scheme
+   - Now correctly matches batch creator output format
+
+**User Experience Improvement**:
+- Before: Confusing `no_reference_images_found` error with 0 jobs processed
+- After: Clear error message on startup if VFScore not installed:
+  ```
+  ERROR: VFScore is not installed. Please install it with:
+      uv pip install path/to/vfscore_rt-*.whl
+
+  VFScore is required for visual fidelity metrics computation.
+  ```
+
+**Testing**: Verified column names match batch creator output in `src/archi3d/orchestrator/batch.py:336-341` and worker output in `worker.py:273`.
+
+---
+
+## Implementation Status
+
 ### Phase 0 — Conventions & Layout (SSOT scaffolding) ✅ COMPLETE
 
 **Objective**: Establish a single, canonical workspace layout and provide safe, reusable I/O primitives for atomic CSV/log writes.
@@ -1364,6 +1689,231 @@ archi3d compute fscore --run-id "your-run-id"
 
 **Next Steps**:
 - Optional: VFScore binary distribution (same approach)
+- Optional: Multi-platform wheel builds using cibuildwheel
+- Optional: Runtime license verification for commercial use
+- Optional: PyPI upload (private repository) for easier distribution
+---
+
+### VFScore Binary Distribution (2025-11-26) ✅ COMPLETE
+
+**Objective**: Package VFScore as a closed-source binary wheel using Cython compilation for code protection and distribution, mirroring the FScore approach.
+
+**Background**:
+Per the "open-core" delivery strategy, VFScore contains proprietary visual fidelity scoring algorithms (Objective2 pipeline with pre-rendered library, LPIPS scoring, IoU silhouette matching) and must be distributed as compiled binaries to protect intellectual property. The binary wheel approach allows standard pip installation while preventing source code inspection.
+
+**Configuration Integration Fix (2025-11-26)**:
+After initial wheel distribution, VFScore integration with archi3D failed with `no_reference_images_found` error. Root cause analysis revealed configuration loading issues:
+
+**Problem**:
+1. VFScore evaluator was calling non-existent `load_config()` function (should use `Config.load()`)
+2. Configuration was loading from file instead of using embedded defaults
+3. Technical parameters from config.yaml were not embedded in the wheel
+4. No mechanism for archi3D to pass workspace-specific paths (blender_exe, hdri)
+5. Evaluator was using outdated Archi3DSource approach instead of direct pipeline invocation
+
+**Solution**:
+1. **Embedded Configuration Defaults** (`VFScore_RT/src/vfscore/config.py`):
+   - Updated all Pydantic model defaults to match finetuned config.yaml parameters
+   - RadiusCalibrationConfig: tri-criterion pipeline with Step 2 (iou_ar), Step 4 (iou), 2 coarse iterations, 3 step4_5 iterations
+   - Objective2LibraryConfig: radius_multipliers=[1.0], fov_values=[20.0], elevation_values=[0-40 degrees in 5-10 degree steps]
+   - Objective2RefinementConfig: disabled by default (refinement.enabled=false)
+   - LPIPSConfig: model="alex", device="cpu"
+
+2. **New load_config() Function** (`VFScore_RT/src/vfscore/config.py:391-442`):
+   - Accepts workspace_path, blender_exe, hdri_path parameters
+   - Creates Config instance with embedded defaults (no file loading)
+   - Applies path overrides if provided
+   - Checks for optional `vfscore_config.yaml` in workspace for user overrides
+   - Resolves relative paths relative to workspace
+
+3. **Updated Evaluator** (`VFScore_RT/src/vfscore/evaluator.py`):
+   - Uses new `load_config(workspace_path=...)` function
+   - Creates temporary GT directory with reference images passed by archi3D
+   - Directly invokes `Objective2Pipeline._process_item()` with record dict
+   - Sets `config.objective.priors_cache_dir` to control output directory placement
+   - Cleans up temporary GT directory after processing
+
+**Technical Parameters Embedded (from config.yaml)**:
+- Pipeline mode: tri_criterion
+- Radius calibration: resolution=256, pose_estimation_resolution=256, FOV=20 degrees
+- Step 1 initial adjustment: yaw=45 degrees, elevation=10 degrees, border margin=3%
+- Step 2 selection: iou_ar with top_fraction=3%
+- Step 3 intermediate margin: 0.5%
+- Step 4 search mode: fine (local search around best Step 3 pose), num_candidates=15
+- Step 4 selection: iou (best silhouette match)
+- Step 5 border margin: 0.5%
+- Step 6 LPIPS: disabled (false)
+- Yaw search: coarse_step=4 degrees, fine_step=0.5 degrees, fine_range=10 degrees
+- Elevation search: coarse_step=5 degrees, fine_step=0.5 degrees, fine_range=10 degrees
+- Refinement: disabled
+
+**User Override Mechanism**:
+Users can create `vfscore_config.yaml` in their archi3D workspace to override any embedded defaults. Example:
+```yaml
+objective:
+  objective2:
+    library:
+      radius_calibration:
+        step4_num_candidates: 20  # Override default 15
+```
+
+**Changes Made**:
+
+1. **VFScore Evaluator Wrapper** (`VFScore_RT/src/vfscore/evaluator.py`):
+   - Created public API wrapper function: `evaluate_visual_fidelity(cand_glb, ref_images, out_dir, repeats, timeout_s, workspace)`
+   - Wraps internal `Objective2Pipeline` for compatibility with archi3D adapter
+   - Returns canonical schema matching Phase 6 requirements
+   - **Added artifact export fields**:
+     - `artifacts_dir` — Path to vfscore_artifacts directory
+     - `gt_image` — Relative path to GT image used for LPIPS comparison
+     - `render_image` — Relative path to HQ render used for LPIPS comparison
+   - Loads artifact paths from `vfscore_artifacts/artifacts.json` created by pipeline
+   - Enables HTML report generation with GT/render side-by-side comparison
+
+2. **Cython Build Configuration** (`VFScore_RT/setup.py`):
+   - Compiles **all 21 modules** to C extensions:
+     - **Main modules** (3): `evaluator`, `config`, `utils`
+     - **Objective2 pipeline** (11): `pipeline_objective2`, `render_hq_pyrender`, `render_realtime`, `prerender_library`, `multi_gt_matcher`, `refine_pose`, `lpips_score`, `silhouette`, `combine`, `cache`, `image_utils`
+     - **Data sources** (3): `base`, `archi3d_source`, `legacy_source`
+     - **Preprocessing/reporting** (4): `preprocess_gt`, `ingest`, `aggregate_objective`, `report_objective`
+   - **Cython Type Fixes Applied**:
+     - `combine.py` — Rewrote to use `math.pow()` instead of `**` operator to avoid complex type inference
+     - `cache.py` — Compiled successfully without modifications
+   - Compiler directives:
+     - `boundscheck=False`, `wraparound=False`, `cdivision=True` (performance)
+     - `embedsignature=True`, `binding=True` (introspection)
+   - NumPy integration via `np.get_include()` and `NPY_NO_DEPRECATED_API` macro
+   - Build directory: `build/cython/`
+
+3. **Project Configuration Updates** (`VFScore_RT/pyproject.toml`):
+   - Updated build system requirements:
+     ```toml
+     [build-system]
+     requires = ["setuptools>=65.0", "wheel", "Cython>=0.29.0", "numpy>=1.24.0"]
+     build-backend = "setuptools.build_meta"
+     ```
+   - Changed license from MIT to Proprietary:
+     ```toml
+     license = {text = "Proprietary - All Rights Reserved"}
+     classifiers = [
+         "License :: Other/Proprietary License",
+         # ... other classifiers
+     ]
+     ```
+   - Version bumped: `0.1.0` → `0.2.0`
+
+4. **Proprietary License** (`VFScore_RT/LICENSE.txt`):
+   - Comprehensive 10-section license agreement (same structure as FScore)
+   - Key restrictions:
+     - **No reverse engineering, decompilation, or disassembly**
+     - **No modification or derivative works**
+     - **No redistribution** without written permission
+     - **No commercial use** without explicit permission
+     - **No source code access** (binary distribution only)
+   - Liability limitation and warranty disclaimer
+   - Termination clause for license violations
+
+5. **Distribution Control** (`VFScore_RT/MANIFEST.in`):
+   - Includes: LICENSE.txt, README.md, pyproject.toml, setup.py
+   - Excludes:
+     - Test files, dev files, build artifacts
+     - Compiled files (*.pyc, *.pyo, *.so, *.pyd, *.cpp, *.c)
+     - IDE/editor files (.vscode/, .idea/, .claude/)
+     - Documentation (CLAUDE.md, gemini.md, plan.md)
+
+6. **Package Export** (`VFScore_RT/src/vfscore/__init__.py`):
+   - Exported `evaluate_visual_fidelity` function for public API
+   - Version bumped to `0.2.0`
+
+**Build Process**:
+
+```bash
+# Build binary wheel
+cd VFScore_RT
+python setup.py bdist_wheel
+
+# Output
+dist/vfscore_rt-0.2.0-cp311-cp311-win_amd64.whl
+```
+
+**Build Output**:
+- Wheel file: `vfscore_rt-0.2.0-cp311-cp311-win_amd64.whl` (1.4 MB)
+- Platform-specific: `cp311-cp311-win_amd64` (Python 3.11, Windows x64)
+- Contains:
+  - **21 compiled `.pyd` extensions** (binary C modules) — 100% coverage
+  - Corresponding `.py` stub files for type hints
+  - `__init__.py` and `__main__.py` (package structure)
+  - LICENSE.txt, metadata
+
+**Compilation Notes**:
+- **All modules successfully compiled**: Initial Cython type inference issues with `combine.py` resolved by rewriting `**` operator to use `math.pow()`
+- **Warning suppressions**: Negative indices with `wraparound=False` generate compiler warnings but do not affect build success (Python semantics preserved)
+- **Build status**: ✅ Complete — 21/21 modules compiled to binary
+- **Verification**: Tested import of `evaluate_visual_fidelity`, `combine`, and `cache` modules from wheel installation
+
+**Installation**:
+
+```bash
+# Install binary wheel
+pip install vfscore_rt-0.2.0-cp311-cp311-win_amd64.whl
+
+# Verify installation
+python -c "from vfscore.evaluator import evaluate_visual_fidelity; print('Success!')"
+
+# Use with archi3D (Phase 8 adapter discovery)
+archi3d compute vfscore --run-id "your-run-id"
+```
+
+**Integration with archi3D**:
+- Phase 8 adapter discovery automatically detects installed wheel
+- No code changes needed in archi3D
+- Works identically to editable install (`pip install -e path/to/VFScore_RT`)
+- CLI output: "VFScore adapter resolved via import"
+- Artifact export enables HTML report generation with GT/render comparison images
+
+**Code Protection**:
+- Source code compiled to native C extensions
+- `.pyd` files are binary-only (not human-readable)
+- Decompilation extremely difficult (requires reverse engineering C code)
+- Proprietary license explicitly forbids reverse engineering
+- Stronger protection than obfuscation tools
+
+**Performance**:
+- Native C extensions provide performance benefits for rendering pipeline
+- Compiler optimizations enabled (bounds check disabled, C division)
+- NumPy integration via C API
+- LPIPS/rendering operations benefit from compiled code
+
+**Platform Support**:
+- Current build: Windows x64, Python 3.11
+- For multi-platform distribution, build on each target platform:
+  - Linux: `cp311-cp311-linux_x86_64.whl`
+  - macOS: `cp311-cp311-macosx_*_x86_64.whl` or `macosx_*_arm64.whl`
+- Use `cibuildwheel` for automated multi-platform builds in CI/CD
+
+**Deliverables**:
+- ✅ `evaluator.py` public API wrapper with artifact export
+- ✅ `setup.py` with Cython configuration (19 modules)
+- ✅ Updated `pyproject.toml` with build requirements and proprietary license
+- ✅ `LICENSE.txt` with comprehensive proprietary license agreement
+- ✅ `MANIFEST.in` controlling distribution contents
+- ✅ Binary wheel: `dist/vfscore_rt-0.2.0-cp311-cp311-win_amd64.whl`
+
+**Distribution Instructions**:
+1. Build wheel on target platform: `python setup.py bdist_wheel`
+2. Distribute wheel file (via private PyPI, email, or download link)
+3. Recipients install via: `pip install vfscore_rt-0.2.0-*.whl`
+4. No source code access required
+5. License agreement terms in LICENSE.txt
+
+**Key Features**:
+- **Artifact Export**: Exports GT image and HQ render paths for HTML report generation
+- **API Compatibility**: Public `evaluate_visual_fidelity()` function matches Phase 6/8 adapter contract
+- **Binary Protection**: 19 compiled modules protect proprietary Objective2 pipeline algorithms
+- **Standard Installation**: Works with standard pip install, compatible with venv/virtualenv
+- **Phase 8 Integration**: Seamless integration with archi3D adapter discovery layer
+
+**Next Steps**:
 - Optional: Multi-platform wheel builds using cibuildwheel
 - Optional: Runtime license verification for commercial use
 - Optional: PyPI upload (private repository) for easier distribution

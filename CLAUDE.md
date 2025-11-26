@@ -369,12 +369,56 @@ Phase 6 implements visual fidelity metrics via the `archi3d compute vfscore` com
    - Atomic CSV upserts to `tables/generations.csv` with 15 new VFScore columns
    - Structured logging to `logs/metrics.log`
 
-**VFScore Columns in SSOT** (Phase 6):
-- Core scores: `vfscore_overall`, `vf_finish`, `vf_texture_identity`, `vf_texture_scale_placement`
-- Stats: `vf_repeats_n`, `vf_iqr`, `vf_std`
-- Provenance: `vf_llm_model`, `vf_rubric_json` (compact JSON), `vf_config_hash`, `vf_rationales_dir`
-- Performance: `vf_render_runtime_s`, `vf_scoring_runtime_s`
-- Status: `vf_status` (ok/error/skipped), `vf_error`
+**VFScore Columns in SSOT** (Phase 6 - Objective2 Pipeline):
+
+The VFScore columns capture comprehensive metrics from the objective2 pipeline, which uses LPIPS perceptual distance combined with IoU/AR pose estimation (no LLM).
+
+- **Status** (2): `vf_status` (ok/error/skipped), `vf_error`
+- **Core Metrics** (6):
+  - `vfscore_overall`: Final combined score (0-100)
+  - `vf_lpips_distance`: Raw LPIPS perceptual distance (0-1, lower is better)
+  - `vf_lpips_model`: LPIPS model used ("alex", "vgg", or "squeeze")
+  - `vf_iou`: IoU between GT and rendered mask (0-1, higher is better)
+  - `vf_mask_error`: Mask alignment error (1 - IoU)
+  - `vf_pose_confidence`: Pose confidence (same as IoU)
+- **Score Combination Parameters** (2):
+  - `vf_gamma`: Pose confidence exponent (typically 1.0)
+  - `vf_pose_compensation_c`: Max slack for poor poses (typically 0.5)
+- **Final Pose Parameters** (5):
+  - `vf_azimuth_deg`: Camera azimuth (degrees)
+  - `vf_elevation_deg`: Camera elevation (degrees)
+  - `vf_radius`: Camera distance from object
+  - `vf_fov_deg`: Field of view (degrees)
+  - `vf_obj_yaw_deg`: Object yaw rotation (degrees)
+- **Pipeline Statistics** (5):
+  - `vf_pipeline_mode`: Pipeline mode ("tri_criterion", "ar_based", etc.)
+  - `vf_num_step2_candidates`: Coarse pose candidates count
+  - `vf_num_step4_candidates`: Fine pose candidates count
+  - `vf_num_selected_candidates`: Candidates passed to LPIPS scoring
+  - `vf_best_lpips_idx`: Index of best candidate in selected set
+- **Performance & Provenance** (4):
+  - `vf_render_runtime_s`: Rendering time (seconds)
+  - `vf_scoring_runtime_s`: Pose search + LPIPS time (seconds)
+  - `vf_tool_version`: VFScore version string
+  - `vf_config_hash`: Configuration hash for reproducibility
+- **Artifact Paths** (3):
+  - `vf_artifacts_dir`: Workspace-relative path to vfscore_artifacts directory
+  - `vf_gt_image_path`: Relative path to GT image (from artifacts_dir)
+  - `vf_render_image_path`: Relative path to HQ render (from artifacts_dir)
+- **DEPRECATED** (9 columns kept for backward compatibility, will be removed):
+  - `vf_finish`, `vf_texture_identity`, `vf_texture_scale_placement` (LLM subscores, always NULL)
+  - `vf_repeats_n`, `vf_iqr`, `vf_std` (LLM stats, not applicable)
+  - `vf_llm_model`, `vf_rubric_json`, `vf_rationales_dir` (LLM-related, always NULL)
+
+**Score Combination Formula**:
+```
+slack = pose_compensation_c * (1 - pose_confidence^gamma)
+adjusted_lpips = lpips_distance - slack
+normalized_score = max(0, min(1, 1 - adjusted_lpips))
+vfscore_overall = normalized_score * 100
+```
+
+Where higher `pose_confidence` (IoU) reduces the penalty from LPIPS distance, rewarding well-aligned poses.
 
 **CLI Flags**:
 - `--run-id`: Required, target run to process

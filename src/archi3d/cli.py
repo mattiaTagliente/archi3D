@@ -799,7 +799,7 @@ def compute_vfscore_cmd(
         help="Reference image source: 'used' or 'source' (default: used)",
     ),
     repeats: int = typer.Option(
-        3, "--repeats", help="Number of LLM scoring repeats for consistency (default: 3)"
+        1, "--repeats", help="Number of LLM scoring repeats for consistency (default: 1)"
     ),
     redo: bool = typer.Option(
         False, "--redo", help="Recompute even if metrics already present (default: false)"
@@ -812,6 +812,9 @@ def compute_vfscore_cmd(
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Preview selection without running evaluator (default: false)"
+    ),
+    limit: int | None = typer.Option(
+        None, "--limit", help="Limit number of jobs to process (optional)"
     ),
 ):
     """
@@ -843,6 +846,7 @@ def compute_vfscore_cmd(
         f"Redo: {redo}\n"
         f"Timeout: {timeout_s or '—'}s\n"
         f"Max parallel: {max_parallel}\n"
+        f"Limit: {limit or '—'}\n"
         f"Dry-run: {dry_run}"
     )
     console.print(Panel.fit(panel_text))
@@ -858,6 +862,7 @@ def compute_vfscore_cmd(
             max_parallel=max_parallel,
             timeout_s=timeout_s,
             dry_run=dry_run,
+            limit=limit,
         )
     except Exception as e:  # noqa: BLE001
         import traceback

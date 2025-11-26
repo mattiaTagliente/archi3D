@@ -163,7 +163,7 @@ def _try_import_api(req: FScoreRequest) -> FScoreResponse | None:
     except Exception as e:
         return FScoreResponse(
             ok=False,
-            error=f"FScore import API error: {str(e)[:500]}",
+            error=f"FScore error: {str(e)[:200]}",
         )
 
 
@@ -222,16 +222,16 @@ def _try_cli_invocation(req: FScoreRequest) -> FScoreResponse:
         )
 
     except subprocess.TimeoutExpired:
-        return FScoreResponse(ok=False, error="timeout")
+        return FScoreResponse(ok=False, error="FScore timeout")
     except subprocess.CalledProcessError as e:
         return FScoreResponse(
             ok=False,
-            error=f"FScore CLI failed (exit {e.returncode}): {e.stderr[:500]}",
+            error=f"FScore failed (exit {e.returncode}): {e.stderr[:150]}",
         )
     except Exception as e:
         return FScoreResponse(
             ok=False,
-            error=f"FScore CLI error: {str(e)[:500]}",
+            error=f"FScore error: {str(e)[:200]}",
         )
 
 

@@ -240,7 +240,7 @@ def _process_job(
         if not response.ok:
             # Evaluation failed
             result["fscore_status"] = "error"
-            result["fscore_error"] = response.error[:2000] if response.error else "unknown_error"
+            result["fscore_error"] = response.error[:200] if response.error else "FScore error (unknown)"
             return result
 
         # Success: extract payload
@@ -337,7 +337,7 @@ def _process_job(
     except Exception as e:
         # Unexpected error
         result["fscore_status"] = "error"
-        result["fscore_error"] = f"Unexpected error: {str(e)[:2000]}"
+        result["fscore_error"] = f"Unexpected: {str(e)[:180]}"
         logger.exception(f"Unexpected error processing job {job_id}")
         return result
 
@@ -380,7 +380,18 @@ def compute_fscore(
             "avg_runtime_s": float,
             ...
         }
+
+    Raises:
+        RuntimeError: If FScore is not installed
     """
+    # Early check: Verify FScore is available (always, even in dry-run)
+    try:
+        import fscore  # noqa: F401
+    except ImportError as e:
+        raise RuntimeError(
+            "FScore not installed. See quickstart.md for installation instructions."
+        ) from e
+
     # Load config and paths
     cfg = load_config()
     paths = PathResolver(cfg)
@@ -520,7 +531,7 @@ def compute_fscore(
                         "run_id": run_id,
                         "job_id": row["job_id"],
                         "fscore_status": "error",
-                        "fscore_error": f"Processing exception: {str(e)[:2000]}",
+                        "fscore_error": f"Processing failed: {str(e)[:180]}",
                     }
                     results.append(error_result)
                     counters["error"] = counters.get("error", 0) + 1
