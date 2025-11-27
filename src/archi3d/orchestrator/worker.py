@@ -42,6 +42,77 @@ from archi3d.db.generations import upsert_generations
 from archi3d.utils.io import append_log_record, write_text_atomic
 
 # -------------------------
+# File Naming Helpers
+# -------------------------
+
+
+def _format_variant_for_filename(variant: str) -> str:
+    """
+    Format variant string for use in filenames.
+
+    Rules:
+    - Replace spaces with hyphens
+    - Lowercase for consistency
+    - Remove special characters except hyphens and underscores
+    - Use "default" if variant is empty
+
+    Examples:
+        "Curved backrest" -> "curved-backrest"
+        "Model-A" -> "model-a"
+        "" -> "default"
+    """
+    if not variant or variant.strip() == "":
+        return "default"
+
+    # Lowercase and replace spaces with hyphens
+    formatted = variant.lower().strip().replace(" ", "-")
+
+    # Keep only alphanumeric, hyphens, and underscores
+    import re
+    formatted = re.sub(r'[^a-z0-9\-_]', '', formatted)
+
+    # Collapse multiple hyphens
+    formatted = re.sub(r'-+', '-', formatted)
+
+    # Remove leading/trailing hyphens
+    formatted = formatted.strip('-')
+
+    return formatted if formatted else "default"
+
+
+def _generate_glb_filename(
+    product_id: str,
+    variant: str,
+    algo: str,
+    job_id: str
+) -> str:
+    """
+    Generate meaningful GLB filename with metadata.
+
+    Format: {product_id}_{variant}_{algo}_{job_id[:8]}.glb
+
+    Args:
+        product_id: Product identifier
+        variant: Product variant (will be formatted for filename)
+        algo: Algorithm key (e.g., "tripo3d_v2p5_multi")
+        job_id: Full job ID hash
+
+    Returns:
+        Filename string (e.g., "335888_curved-backrest_tripo3d_v2p5_a1b2c3d4.glb")
+
+    Examples:
+        >>> _generate_glb_filename("335888", "Curved backrest", "tripo3d_v2p5", "a1b2c3d4ef56...")
+        "335888_curved-backrest_tripo3d_v2p5_a1b2c3d4.glb"
+        >>> _generate_glb_filename("123456", "", "meshy_v4_multi", "b2c3d4e5f6...")
+        "123456_default_meshy_v4_multi_b2c3d4e5.glb"
+    """
+    variant_formatted = _format_variant_for_filename(variant)
+    job_id_short = job_id[:8]
+
+    return f"{product_id}_{variant_formatted}_{algo}_{job_id_short}.glb"
+
+
+# -------------------------
 # Worker Environment Capture
 # -------------------------
 
@@ -203,17 +274,31 @@ def _reload_dotenv() -> None:
 # -------------------------
 
 
-def _simulate_dry_run(job_id: str, out_dir: Path) -> tuple[Path, list[Path]]:
+def _simulate_dry_run(
+    product_id: str,
+    variant: str,
+    algo: str,
+    job_id: str,
+    out_dir: Path
+) -> tuple[Path, list[Path]]:
     """
     Simulate a successful generation for dry-run mode.
 
-    Creates minimal placeholder files for generated.glb and previews.
+    Creates minimal placeholder files with meaningful names.
+
+    Args:
+        product_id: Product identifier
+        variant: Product variant
+        algo: Algorithm key
+        job_id: Job ID hash
+        out_dir: Output directory
 
     Returns:
         (generated_glb_path, preview_paths)
     """
-    # Create minimal GLB placeholder
-    glb_path = out_dir / "generated.glb"
+    # Create minimal GLB placeholder with meaningful name
+    glb_filename = _generate_glb_filename(product_id, variant, algo, job_id)
+    glb_path = out_dir / glb_filename
     glb_path.write_text("# Dry-run placeholder GLB\n", encoding="utf-8")
 
     # Create 2 preview placeholders
@@ -266,6 +351,8 @@ def _execute_job(
     run_id = job_row["run_id"]
     job_id = job_row["job_id"]
     algo = job_row["algo"]
+    product_id = job_row["product_id"]
+    variant = job_row["variant"]
 
     # Build list of used image paths
     used_images = []
@@ -307,7 +394,9 @@ def _execute_job(
     try:
         if dry_run:
             # Dry-run simulation
-            gen_glb_path, previews = _simulate_dry_run(job_id, out_dir)
+            gen_glb_path, previews = _simulate_dry_run(
+                product_id, variant, algo, job_id, out_dir
+            )
             status = "completed"
             algo_version = "dry-run"
             price_source = "dry-run"
@@ -365,7 +454,9 @@ def _execute_job(
 
             # Handle result - glb_path may be URL or local path
             glb_result = exec_result.glb_path
-            gen_glb_path = out_dir / "generated.glb"
+            # Generate meaningful filename with metadata
+            glb_filename = _generate_glb_filename(product_id, variant, algo, job_id)
+            gen_glb_path = out_dir / glb_filename
             out_dir.mkdir(parents=True, exist_ok=True)
 
             if isinstance(glb_result, str) and glb_result.startswith("http"):

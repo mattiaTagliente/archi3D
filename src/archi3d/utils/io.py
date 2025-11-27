@@ -173,6 +173,14 @@ def update_csv_atomic(
                 f"key_cols {missing_keys_existing} not found in existing CSV"
             )
 
+        # CRITICAL: Ensure key columns have matching dtypes to prevent merge failures
+        # If df_existing has product_id=353481 (int) and df_new has product_id="353481" (str),
+        # the merge won't match and will create duplicates instead of updates.
+        for key_col in key_cols:
+            if key_col in df_new_deduped.columns:
+                # Convert existing key column to match new data's dtype
+                df_existing[key_col] = df_existing[key_col].astype(df_new_deduped[key_col].dtype)
+
         # Track which keys are updates vs inserts (df_new_deduped already exists)
         existing_keys = df_existing[key_cols].apply(tuple, axis=1)
         new_keys = df_new_deduped[key_cols].apply(tuple, axis=1)
@@ -194,6 +202,12 @@ def update_csv_atomic(
         # Drop _old columns
         cols_to_drop = [c for c in df_merged.columns if c.endswith("_old")]
         df_merged = df_merged.drop(columns=cols_to_drop + ["_merge"])
+
+        # Preserve dtypes from df_new for all columns (especially key columns)
+        # This ensures that if df_new has product_id as str, the final CSV will too
+        for col in df_new_deduped.columns:
+            if col in df_merged.columns:
+                df_merged[col] = df_merged[col].astype(df_new_deduped[col].dtype)
 
         # Preserve column order: existing first, then new columns
         existing_cols = [c for c in df_existing.columns if c in df_merged.columns]

@@ -29,6 +29,7 @@ class VFScoreRequest:
     timeout_s: int | None = None
     workspace: Path | None = None
     blender_exe: Path | None = None
+    algo: str | None = None  # Algorithm identifier for artifact naming
 
 
 @dataclass
@@ -143,7 +144,8 @@ def _try_import_api(req: VFScoreRequest) -> VFScoreResponse | None:
             timeout_s=req.timeout_s,
             workspace=str(req.workspace) if req.workspace else None,
             blender_exe=str(req.blender_exe) if req.blender_exe else None,
-            quiet=True,  # Enable quiet mode when called from archi3D
+            quiet=False,  # Quiet mode disabled: QuietModeFilter has Cython compilation issues with stdout redirection
+            algo=req.algo,  # Pass algorithm identifier for artifact naming
         )
         total_runtime = time.perf_counter() - start_total
 

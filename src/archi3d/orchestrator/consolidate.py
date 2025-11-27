@@ -31,6 +31,61 @@ STATUS_PRECEDENCE = {"completed": 4, "failed": 3, "running": 2, "enqueued": 1}
 
 
 # -------------------------
+# File Naming Helpers
+# -------------------------
+
+
+def _format_variant_for_filename(variant: str) -> str:
+    """
+    Format variant string for use in filenames.
+
+    Rules:
+    - Replace spaces with hyphens
+    - Lowercase for consistency
+    - Remove special characters except hyphens and underscores
+    - Use "default" if variant is empty
+    """
+    if not variant or variant.strip() == "":
+        return "default"
+
+    import re
+    formatted = variant.lower().strip().replace(" ", "-")
+    formatted = re.sub(r'[^a-z0-9\-_]', '', formatted)
+    formatted = re.sub(r'-+', '-', formatted)
+    formatted = formatted.strip('-')
+
+    return formatted if formatted else "default"
+
+
+def _generate_glb_filename(
+    product_id: str,
+    variant: str,
+    algo: str,
+    job_id: str
+) -> str:
+    """
+    Generate meaningful GLB filename with metadata.
+
+    Format: {product_id}_{variant}_{algo}_{job_id[:8]}.glb
+    """
+    import pandas as pd
+
+    # Handle pandas NaN values and convert to strings
+    product_id_str = str(product_id) if not pd.isna(product_id) else "unknown"
+    variant_str = str(variant) if not pd.isna(variant) else ""
+    algo_str = str(algo) if not pd.isna(algo) else "unknown"
+
+    # Strip .0 suffix from product_id if it looks like a float string (e.g., "353481.0" -> "353481")
+    if product_id_str.endswith(".0") and product_id_str[:-2].isdigit():
+        product_id_str = product_id_str[:-2]
+
+    variant_formatted = _format_variant_for_filename(variant_str)
+    job_id_short = job_id[:8]
+
+    return f"{product_id_str}_{variant_formatted}_{algo_str}_{job_id_short}.glb"
+
+
+# -------------------------
 # Helper Functions
 # -------------------------
 
@@ -163,10 +218,26 @@ def _gather_evidence(
         evidence["inprogress_ts"] = _read_marker_timestamp(inprogress_marker)
         evidence["heartbeat_fresh"] = _is_heartbeat_fresh(inprogress_marker)
 
-    # Check generated.glb
+    # Check generated GLB file (try new naming first, fallback to legacy)
     job_output_dir = outputs_dir / job_id
-    glb_path = job_output_dir / "generated.glb"
-    if glb_path.exists():
+
+    # Try new meaningful filename format
+    new_glb_filename = _generate_glb_filename(
+        row["product_id"], row["variant"], row["algo"], job_id
+    )
+    new_glb_path = job_output_dir / new_glb_filename
+
+    # Fallback to legacy filename
+    legacy_glb_path = job_output_dir / "generated.glb"
+
+    # Determine which path to use
+    glb_path = None
+    if new_glb_path.exists():
+        glb_path = new_glb_path
+    elif legacy_glb_path.exists():
+        glb_path = legacy_glb_path
+
+    if glb_path is not None:
         evidence["has_generated_glb"] = True
         evidence["glb_size"] = glb_path.stat().st_size
         evidence["glb_ts"] = _get_file_timestamp(glb_path)
@@ -266,7 +337,7 @@ def _reconcile_row(
     # Downgrade if CSV says completed but GLB missing
     if fix_status and csv_status == "completed" and not evidence["has_generated_glb"]:
         reconciled["status"] = "failed"
-        reconciled["error_msg"] = "missing generated.glb; downgraded by consolidate"
+        reconciled["error_msg"] = "missing generated GLB file; downgraded by consolidate"
         changes["status_changed"] = True
         changes["downgraded_missing_output"] = True
     elif desired_status != csv_status:
@@ -320,7 +391,23 @@ def _reconcile_row(
     # Fill output paths
     if evidence["has_generated_glb"]:
         job_output_dir = paths.outputs_dir(run_id, job_id=job_id)
-        glb_path = job_output_dir / "generated.glb"
+
+        # Try new filename format first, fallback to legacy
+        new_glb_filename = _generate_glb_filename(
+            row["product_id"], row["variant"], row["algo"], job_id
+        )
+        new_glb_path = job_output_dir / new_glb_filename
+        legacy_glb_path = job_output_dir / "generated.glb"
+
+        # Use whichever file exists
+        if new_glb_path.exists():
+            glb_path = new_glb_path
+        elif legacy_glb_path.exists():
+            glb_path = legacy_glb_path
+        else:
+            # Shouldn't happen if evidence["has_generated_glb"] is True, but be defensive
+            glb_path = new_glb_path  # Default to new format
+
         rel_glb = paths.rel_to_workspace(glb_path).as_posix()
 
         if pd.isna(row.get("gen_object_path")) or not row.get("gen_object_path"):

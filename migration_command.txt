@@ -1,0 +1,1 @@
+python scripts/migrate_legacy_results.py --legacy-csv "C:/Users/Shadow/testing/legacy/results_elaborated_enriched.csv" --legacy-root "C:/Users/Shadow/testing/legacy"

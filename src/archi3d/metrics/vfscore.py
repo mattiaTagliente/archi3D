@@ -281,6 +281,7 @@ def _process_job(
             timeout_s=timeout_s,
             workspace=paths.workspace_root,
             blender_exe=blender_exe,
+            algo=row.get("algo", None),  # Pass algorithm for artifact naming
         )
         response: VFScoreResponse = evaluate_vfscore(req)
 

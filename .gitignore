@@ -8,6 +8,7 @@ env/
 #claude.md
 #gemini.md
 #agents.md
+report_design/
 
 # Python bytecode and cache
 __pycache__/
