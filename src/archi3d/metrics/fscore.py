@@ -222,9 +222,54 @@ def _process_job(
         result["fscore_error"] = "dry_run"
         return result
 
-    # Check if result.json already exists and we're not redoing
+    # Check if result.json already exists (disk-based cache)
     result_json_path = out_dir / "result.json"
-    # Note: redo logic is handled upstream in eligibility check
+    if result_json_path.exists():
+        # Load cached result instead of recomputing
+        try:
+            logger.info(f"{job_id}: Loading cached FScore result from disk")
+            with open(result_json_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            # Populate result dict from cached payload
+            result["fscore_status"] = "ok"
+            result["fscore"] = payload.get("fscore")
+            result["precision"] = payload.get("precision")
+            result["recall"] = payload.get("recall")
+            result["chamfer_l2"] = payload.get("chamfer_l2")
+            result["fscore_n_points"] = payload.get("n_points", n_points)
+
+            # Alignment
+            alignment = payload.get("alignment", {})
+            result["fscore_scale"] = alignment.get("scale")
+            rotation = alignment.get("rotation_quat", {})
+            result["fscore_rot_w"] = rotation.get("w")
+            result["fscore_rot_x"] = rotation.get("x")
+            result["fscore_rot_y"] = rotation.get("y")
+            result["fscore_rot_z"] = rotation.get("z")
+            translation = alignment.get("translation", {})
+            result["fscore_tx"] = translation.get("x")
+            result["fscore_ty"] = translation.get("y")
+            result["fscore_tz"] = translation.get("z")
+
+            # Distance stats
+            dist_stats = payload.get("dist_stats", {})
+            result["fscore_dist_mean"] = dist_stats.get("mean")
+            result["fscore_dist_median"] = dist_stats.get("median")
+            result["fscore_dist_p95"] = dist_stats.get("p95")
+            result["fscore_dist_p99"] = dist_stats.get("p99")
+            result["fscore_dist_max"] = dist_stats.get("max")
+
+            # Runtime and version info from cached payload
+            result["fscore_runtime_s"] = payload.get("timing", {}).get("t_total_s", 0.0)
+            result["fscore_tool_version"] = payload.get("tool_version")
+            result["fscore_config_hash"] = payload.get("config_hash")
+
+            return result
+
+        except Exception as e:
+            # Cache load failed - fall through to recompute
+            logger.warning(f"{job_id}: Failed to load cached result, recomputing: {e}")
 
     try:
         # Invoke FScore evaluator

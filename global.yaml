@@ -18,7 +18,7 @@ algorithms:
   - hunyuan3d_v2p1_single
 
 # --- Quality Thresholds ---
-# (Note: Currently defined but may not be actively enforced.
+# (Note: Currently defined but not actively enforced.
 #  Kept for future use in gating/reporting.)
 thresholds:
   lpips_max: 0.15  # Max acceptable LPIPS (lower is better)

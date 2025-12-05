@@ -198,8 +198,23 @@ def update_csv_atomic(
             indicator=True
         )
 
-        # For columns that appear in both, prefer new values (non-suffixed)
-        # Drop _old columns
+        # CRITICAL FIX: Preserve existing values for rows NOT being updated
+        # For columns that appear in BOTH dataframes:
+        # - If row is being UPDATED (in both): use new value
+        # - If row is NOT being updated (only in existing): preserve old value
+        # This prevents data loss when running metrics in batches
+        for col in df_new_deduped.columns:
+            if col in key_cols:
+                continue  # Key columns already handled by merge
+
+            old_col = f"{col}_old"
+            if old_col in df_merged.columns:
+                # Column exists in existing CSV
+                # Preserve old values for rows NOT being updated (left_only = only in df_existing)
+                is_existing_only = df_merged["_merge"] == "left_only"
+                df_merged.loc[is_existing_only, col] = df_merged.loc[is_existing_only, old_col]
+
+        # Drop _old columns and _merge indicator
         cols_to_drop = [c for c in df_merged.columns if c.endswith("_old")]
         df_merged = df_merged.drop(columns=cols_to_drop + ["_merge"])
 
@@ -207,7 +222,39 @@ def update_csv_atomic(
         # This ensures that if df_new has product_id as str, the final CSV will too
         for col in df_new_deduped.columns:
             if col in df_merged.columns:
-                df_merged[col] = df_merged[col].astype(df_new_deduped[col].dtype)
+                target_dtype = df_new_deduped[col].dtype
+
+                # Safe dtype conversion: handle numeric types with NaN/empty strings
+                # Check if column is numeric OR if new data contains numeric values
+                # (VFScore integer columns with NaN may be object dtype)
+                if pd.api.types.is_integer_dtype(target_dtype):
+                    # Use nullable Int64 dtype to handle NaN values
+                    # First convert to numeric, coercing errors (empty strings → NaN)
+                    df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce').astype('Int64')
+                elif pd.api.types.is_float_dtype(target_dtype):
+                    # Convert to float, coercing errors
+                    df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce')
+                elif target_dtype == object:
+                    # For object columns, try numeric conversion if new data looks numeric
+                    # This handles VFScore integer columns that have NaN (stored as object)
+                    try:
+                        # Check if values are numeric by attempting conversion
+                        numeric_vals = pd.to_numeric(df_new_deduped[col], errors='coerce')
+                        if numeric_vals.notna().any():
+                            # New data contains numeric values - convert merged column too
+                            df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce')
+                            # If all numeric values are integers, use Int64
+                            if numeric_vals.dropna().apply(lambda x: x == int(x)).all():
+                                df_merged[col] = df_merged[col].astype('Int64')
+                        else:
+                            # New data is truly non-numeric strings
+                            df_merged[col] = df_merged[col].astype(target_dtype)
+                    except Exception:
+                        # Fallback: direct conversion
+                        df_merged[col] = df_merged[col].astype(target_dtype)
+                else:
+                    # For other types (strings, etc.), direct conversion is safe
+                    df_merged[col] = df_merged[col].astype(target_dtype)
 
         # Preserve column order: existing first, then new columns
         existing_cols = [c for c in df_existing.columns if c in df_merged.columns]

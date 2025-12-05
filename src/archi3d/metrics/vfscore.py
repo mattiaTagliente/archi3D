@@ -271,6 +271,58 @@ def _process_job(
         result["vf_error"] = "dry_run"
         return result
 
+    # Check if result.json already exists (disk-based cache)
+    result_json_path = out_dir / "result.json"
+    if result_json_path.exists():
+        # Load cached result instead of recomputing
+        try:
+            logger.info(f"{job_id}: Loading cached VFScore result from disk")
+            with open(result_json_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            # Populate result dict from cached payload (objective2 schema)
+            result["vf_status"] = "ok"
+            result["vfscore_overall"] = payload.get("vfscore_overall")
+            result["vf_lpips_distance"] = payload.get("lpips_distance")
+            result["vf_lpips_model"] = payload.get("lpips_model")
+            result["vf_iou"] = payload.get("iou")
+            result["vf_mask_error"] = payload.get("mask_error")
+            result["vf_pose_confidence"] = payload.get("pose_confidence")
+            result["vf_gamma"] = payload.get("gamma")
+            result["vf_pose_compensation_c"] = payload.get("pose_compensation_c")
+
+            # Final pose
+            final_pose = payload.get("final_pose", {})
+            result["vf_azimuth_deg"] = final_pose.get("azimuth_deg")
+            result["vf_elevation_deg"] = final_pose.get("elevation_deg")
+            result["vf_radius"] = final_pose.get("radius")
+            result["vf_fov_deg"] = final_pose.get("fov_deg")
+            result["vf_obj_yaw_deg"] = final_pose.get("obj_yaw_deg")
+
+            # Pipeline stats
+            result["vf_pipeline_mode"] = payload.get("pipeline_mode")
+            result["vf_num_step2_candidates"] = payload.get("num_step2_candidates")
+            result["vf_num_step4_candidates"] = payload.get("num_step4_candidates")
+            result["vf_num_selected_candidates"] = payload.get("num_selected_candidates")
+            result["vf_best_lpips_idx"] = payload.get("best_lpips_idx")
+
+            # Performance & provenance
+            result["vf_render_runtime_s"] = payload.get("render_runtime_s")
+            result["vf_scoring_runtime_s"] = payload.get("scoring_runtime_s")
+            result["vf_tool_version"] = payload.get("tool_version")
+            result["vf_config_hash"] = payload.get("config_hash")
+
+            # Artifact paths (workspace-relative)
+            result["vf_artifacts_dir"] = payload.get("artifacts_dir")
+            result["vf_gt_image_path"] = payload.get("gt_image_path")
+            result["vf_render_image_path"] = payload.get("render_image_path")
+
+            return result
+
+        except Exception as e:
+            # Cache load failed - fall through to recompute
+            logger.warning(f"{job_id}: Failed to load cached result, recomputing: {e}")
+
     try:
         # Invoke VFScore evaluator
         req = VFScoreRequest(

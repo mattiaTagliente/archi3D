@@ -1,9 +1,0 @@
-archi3d catalog build
-
-archi3d batch create --run-id <ID> [--algos <CSV>] [--only <glob>]
-
-archi3d run worker --run-id <ID> --algo <KEY> [--limit N] [--dry-run]
-
-archi3d metrics compute --run-id <ID> [--algo <KEY>] [--recompute]
-
-archi3d report build --run-id <ID> [--out <dir>]
