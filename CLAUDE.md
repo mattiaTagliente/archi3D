@@ -81,7 +81,8 @@ archi3d consolidate --run-id "test-run"                  # Reconcile SSOT with d
 archi3d compute fscore --run-id "test-run"               # Compute geometry metrics
 archi3d compute vfscore --run-id "test-run"              # Compute visual fidelity metrics
 archi3d metrics compute --run-id "test-run"              # Compute additional metrics
-archi3d report build --run-id "test-run"                 # Generate reports
+archi3d report build --run-id "test-run"                 # Generate CSV/YAML reports
+archi3d report build --run-id "test-run" --html          # Generate interactive HTML report
 
 # Debug mode
 archi3d run worker --run-id "test-run" --adapter "..." --limit 1 --dry-run
@@ -482,6 +483,69 @@ archi3d compute vfscore --run-id "2025-10-20-exp" --redo --jobs "job_abc*"
 
 # Preview before running
 archi3d compute vfscore --run-id "2025-10-20-exp" --dry-run
+```
+
+### HTML Report Generation (Phase 7)
+The reporting module supports interactive HTML report generation with advanced visualizations and statistical analysis.
+
+**Key Features**:
+1. **Interactive Visualizations**: Plotly-based box plots, scatter plots, and leaderboard rankings
+2. **Statistical Analysis**: Mann-Whitney U test for algorithm comparison with significance coloring
+3. **Multi-Run Support**: Dropdown selector to switch between different test runs
+4. **Visual Comparison**: Side-by-side GT vs. Render image comparison with pagination
+5. **Workspace-Relative Paths**: All image paths are workspace-relative for portability
+
+**HTML Report Components**:
+- **Box Plots Tab**: Distribution visualization for F-Score, VF-Score, and execution time by category
+- **Statistics Tab**: Descriptive statistics (mean, std) and pairwise significance testing
+- **Algorithm Comparison Tab**: Scatter plots, center of mass visualization, and leaderboard ranking
+- **Visual Comparison Tab**: Paginated grid of GT vs. rendered images with search functionality
+- **Summary Tab**: DataTable with all items and their metadata
+
+**Statistical Functions** (Pure Python Implementation):
+- `mann_whitney_u()`: Two-sided Mann-Whitney U test for non-parametric comparison
+- `calculate_rank()`: Rank assignment with tie handling for statistical tests
+- `remove_outliers()`: IQR-based outlier removal (applied only to execution times)
+- `calculate_stats()`: Comprehensive statistical summary per algorithm
+
+**HTML Report Structure**:
+- Saved to: `reports/<run_id>/report.html` (workspace-relative)
+- Self-contained HTML with embedded data (no external data files required)
+- Uses CDN resources for Bootstrap, Plotly, DataTables, jQuery
+- Responsive design with mobile support
+
+**CLI Usage**:
+```bash
+# Generate CSV/YAML reports (default)
+archi3d report build --run-id "2025-10-20-exp"
+
+# Generate interactive HTML report (includes CSV/YAML)
+archi3d report build --run-id "2025-10-20-exp" --html
+
+# Custom output directory
+archi3d report build --run-id "2025-10-20-exp" --html --out /path/to/custom/dir
+```
+
+**Integration Points**:
+- Reads from: `tables/generations.csv`, `tables/items.csv`
+- Loads image paths from: `runs/<run_id>/metrics/vfscore/<job_id>/lpips_debug/`
+- Requires: `fscore` and `vfscore_overall` columns in generations.csv
+- Skips rows with missing or zero metrics
+
+**Typical Workflow**:
+```bash
+# Complete workflow with HTML report
+archi3d catalog build
+archi3d batch create --run-id "exp-2025-12"
+archi3d run worker --run-id "exp-2025-12" --adapter "tripo3d_v2p5_multi"
+archi3d consolidate --run-id "exp-2025-12"
+archi3d compute fscore --run-id "exp-2025-12"
+archi3d compute vfscore --run-id "exp-2025-12"
+archi3d report build --run-id "exp-2025-12" --html
+
+# Open the report
+# Windows: start reports/exp-2025-12/report.html
+# Linux/Mac: open reports/exp-2025-12/report.html
 ```
 
 ## Important Constraints

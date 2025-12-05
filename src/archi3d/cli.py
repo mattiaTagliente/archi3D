@@ -527,28 +527,43 @@ def report_build(
     out: Path | None = typer.Option(
         None, "--out", help="Output dir (default: reports/<run_id> under workspace)"
     ),
+    html: bool = typer.Option(
+        False, "--html", help="Generate interactive HTML report with visualizations"
+    ),
 ):
     """
-    Build a minimal report (CSVs/figures) for a run.
+    Build a report for a run (CSVs/YAML by default, HTML with --html flag).
     """
     _, paths = _load_runtime()
 
     try:
         from archi3d.reporting.report import build as report_build_impl
+        from archi3d.reporting.report import build_html_report
     except Exception as e:  # noqa: BLE001
-        _fail(f"Missing module archi3d.reporting.report (build). Import error: {e!r}")
+        _fail(f"Missing module archi3d.reporting.report. Import error: {e!r}")
 
     out_dir = out or (paths.reports_dir / run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print(Panel.fit(f"[bold]Report build[/bold]\nRun: {run_id}\nOut: {out_dir}"))
+    report_type = "HTML + CSV" if html else "CSV"
+    console.print(Panel.fit(f"[bold]Report build[/bold]\nRun: {run_id}\nOut: {out_dir}\nType: {report_type}"))
 
     try:
+        # Build CSV/YAML artifacts
         outputs = report_build_impl(run_id=run_id, out_dir=out_dir, paths=paths)
+
+        # Build HTML report if requested
+        if html:
+            html_path = build_html_report(run_id=run_id, paths=paths)
+            outputs.append(html_path)
+            console.print(f"\n[green]HTML report generated:[/green] {html_path}")
+
     except Exception as e:  # noqa: BLE001
         _fail(f"Report build failed: {e!r}")
 
-    console.print(f"[green]OK[/green] Report artifacts: {outputs}")
+    console.print(f"[green]OK[/green] Report artifacts: {len(outputs)} file(s)")
+    for output in outputs:
+        console.print(f"  - {output}")
 
 
 # ---------------------------
