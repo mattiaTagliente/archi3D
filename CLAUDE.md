@@ -81,8 +81,7 @@ archi3d consolidate --run-id "test-run"                  # Reconcile SSOT with d
 archi3d compute fscore --run-id "test-run"               # Compute geometry metrics
 archi3d compute vfscore --run-id "test-run"              # Compute visual fidelity metrics
 archi3d metrics compute --run-id "test-run"              # Compute additional metrics
-archi3d report build --run-id "test-run"                 # Generate CSV/YAML reports
-archi3d report build --run-id "test-run" --html          # Generate interactive HTML report
+archi3d report build --run-id "test-run"                 # Generate interactive HTML report
 
 # Debug mode
 archi3d run worker --run-id "test-run" --adapter "..." --limit 1 --dry-run
@@ -486,7 +485,7 @@ archi3d compute vfscore --run-id "2025-10-20-exp" --dry-run
 ```
 
 ### HTML Report Generation (Phase 7)
-The reporting module supports interactive HTML report generation with advanced visualizations and statistical analysis.
+The reporting module generates interactive HTML reports with advanced visualizations and statistical analysis.
 
 **Key Features**:
 1. **Interactive Visualizations**: Plotly-based box plots, scatter plots, and leaderboard rankings
@@ -509,26 +508,24 @@ The reporting module supports interactive HTML report generation with advanced v
 - `calculate_stats()`: Comprehensive statistical summary per algorithm
 
 **HTML Report Structure**:
-- Saved to: `reports/<run_id>/report.html` (workspace-relative)
+- Saved to: `reports/report.html` (workspace-relative, single file for all runs)
 - Self-contained HTML with embedded data (no external data files required)
 - Uses CDN resources for Bootstrap, Plotly, DataTables, jQuery
 - Responsive design with mobile support
+- Image paths use `../` prefix for correct resolution from reports subfolder
 
 **CLI Usage**:
 ```bash
-# Generate CSV/YAML reports (default)
+# Generate interactive HTML report (includes all runs)
 archi3d report build --run-id "2025-10-20-exp"
 
-# Generate interactive HTML report (includes CSV/YAML)
-archi3d report build --run-id "2025-10-20-exp" --html
-
-# Custom output directory
-archi3d report build --run-id "2025-10-20-exp" --html --out /path/to/custom/dir
+# Output location (automatic)
+# reports/report.html (within workspace)
 ```
 
 **Integration Points**:
 - Reads from: `tables/generations.csv`, `tables/items.csv`
-- Loads image paths from: `runs/<run_id>/metrics/vfscore/<job_id>/lpips_debug/`
+- Image paths resolved with `../` prefix: `../runs/<run_id>/metrics/vfscore/<job_id>/lpips_debug/`
 - Requires: `fscore` and `vfscore_overall` columns in generations.csv
 - Skips rows with missing or zero metrics
 
@@ -541,11 +538,11 @@ archi3d run worker --run-id "exp-2025-12" --adapter "tripo3d_v2p5_multi"
 archi3d consolidate --run-id "exp-2025-12"
 archi3d compute fscore --run-id "exp-2025-12"
 archi3d compute vfscore --run-id "exp-2025-12"
-archi3d report build --run-id "exp-2025-12" --html
+archi3d report build --run-id "exp-2025-12"
 
-# Open the report
-# Windows: start reports/exp-2025-12/report.html
-# Linux/Mac: open reports/exp-2025-12/report.html
+# Open the report in browser (single file for all runs)
+# Windows: start reports/report.html
+# Linux/Mac: open reports/report.html
 ```
 
 ## Important Constraints
