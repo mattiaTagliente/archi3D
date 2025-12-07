@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 """
 Batch creation orchestration for Phase 2.
 

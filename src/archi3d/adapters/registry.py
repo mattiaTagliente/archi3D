@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 from __future__ import annotations
 from typing import Dict, Type
 from archi3d.adapters.base import ModelAdapter

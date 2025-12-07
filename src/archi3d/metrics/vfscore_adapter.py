@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 """
 VFScore Adapter — isolates external VFScore tool integration.
 

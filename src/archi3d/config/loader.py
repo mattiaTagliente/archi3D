@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 # src/archi3d/config/loader.py
 """
 Configuration loading with 3-layer merge and .env support.

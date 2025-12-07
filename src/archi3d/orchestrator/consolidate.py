@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 # archi3d/orchestrator/consolidate.py
 """
 Phase 4: Consolidate command - reconcile SSOT generations.csv with on-disk artifacts and state markers.

@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 from __future__ import annotations
 import json, re, threading, time, sys, logging
 from pathlib import Path

@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 # archi3d/orchestrator/worker.py
 """
 Phase 3: Worker execution logic for running generation jobs.

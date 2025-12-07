@@ -493,19 +493,34 @@ The reporting module generates interactive HTML reports with advanced visualizat
 3. **Multi-Run Support**: Dropdown selector to switch between different test runs
 4. **Visual Comparison**: Side-by-side GT vs. Render image comparison with pagination
 5. **Workspace-Relative Paths**: All image paths are workspace-relative for portability
+6. **Subjective Evaluation Support**: Loads human ratings from Excel files for correlation analysis
 
 **HTML Report Components**:
-- **Box Plots Tab**: Distribution visualization for F-Score, VF-Score, and execution time by category
-- **Statistics Tab**: Descriptive statistics (mean, std) and pairwise significance testing
-- **Algorithm Comparison Tab**: Scatter plots, center of mass visualization, and leaderboard ranking
+- **Obiettivo: Box Plots**: Distribution visualization for F-Score, VF-Score, and execution time by category
+- **Obiettivo: Statistiche**: Descriptive statistics (mean, std) and pairwise significance testing
+- **Obiettivo: Confronto**: Scatter plots, center of mass visualization, and leaderboard ranking
+- **Soggettivo: Box Plots**: Distribution visualization for subjective geometry and visual fidelity ratings
+- **Soggettivo: Statistiche**: Descriptive statistics for human evaluations
+- **Soggettivo: Confronto**: Subjective ratings scatter plots and leaderboard
+- **Obiettivo vs Soggettivo**: Spearman correlation analysis between objective metrics and human ratings
 - **Visual Comparison Tab**: Paginated grid of GT vs. rendered images with search functionality
 - **Summary Tab**: DataTable with all items and their metadata
 
-**Statistical Functions** (Pure Python Implementation):
-- `mann_whitney_u()`: Two-sided Mann-Whitney U test for non-parametric comparison
-- `calculate_rank()`: Rank assignment with tie handling for statistical tests
-- `remove_outliers()`: IQR-based outlier removal (applied only to execution times)
-- `calculate_stats()`: Comprehensive statistical summary per algorithm
+**Subjective Evaluation Integration**:
+- **Data Source**: Loads from `runs/<run_id>/Subjective evaluation.xlsx` (Excel file with "Average" sheet)
+- **Expected Columns**: ID, Algoritmo, Geometria (0-100), Fedelta visiva (0-100)
+- **Automatic Matching**: Matches algorithm names and product IDs from Excel to generations data
+- **Correlation Analysis**: Spearman correlation between objective metrics (FScore, VFScore) and subjective ratings
+- **Graceful Degradation**: Subjective tabs show informative messages if no data is available
+- **Optional Dependency**: Requires pandas for Excel loading (gracefully skips if not installed)
+
+**Statistical Functions** (Pure Python and JavaScript Implementation):
+- `mann_whitney_u()`: Two-sided Mann-Whitney U test for non-parametric comparison (Python)
+- `calculate_rank()`: Rank assignment with tie handling for statistical tests (Python)
+- `remove_outliers()`: IQR-based outlier removal (applied only to execution times) (Python)
+- `calculate_stats()`: Comprehensive statistical summary per algorithm (Python)
+- `spearmanCorrelation()`: Spearman rank correlation with p-value approximation (JavaScript)
+- `load_subjective_data()`: Excel loader for human evaluation data (Python)
 
 **HTML Report Structure**:
 - Saved to: `reports/report.html` (workspace-relative, single file for all runs)
@@ -525,9 +540,11 @@ archi3d report build --run-id "2025-10-20-exp"
 
 **Integration Points**:
 - Reads from: `tables/generations.csv`, `tables/items.csv`
+- Optional subjective data: `runs/<run_id>/Subjective evaluation.xlsx`
 - Image paths resolved with `../` prefix: `../runs/<run_id>/metrics/vfscore/<job_id>/lpips_debug/`
 - Requires: `fscore` and `vfscore_overall` columns in generations.csv
 - Skips rows with missing or zero metrics
+- Subjective evaluation data is merged into the main data if available, enabling correlation analysis
 
 **Typical Workflow**:
 ```bash

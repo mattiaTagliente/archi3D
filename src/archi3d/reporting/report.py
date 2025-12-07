@@ -1,15 +1,26 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 # archi3d/reporting/report.py
 from __future__ import annotations
 
 import csv
 import json
 import math
+import re
 import statistics
 from itertools import combinations
 from pathlib import Path
 
 from archi3d.config.loader import load_config
 from archi3d.config.paths import PathResolver
+
+# Optional pandas import for subjective evaluation loading
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
 
 
 def build(run_id: str, paths: PathResolver) -> Path:
@@ -27,6 +38,82 @@ def build(run_id: str, paths: PathResolver) -> Path:
         Path to the generated HTML file (reports/report.html)
     """
     return build_html_report(run_id=run_id, paths=paths)
+
+
+# ---------------------------------------------------------------
+# Subjective Evaluation Data Loading
+# ---------------------------------------------------------------
+
+def load_subjective_data(run_id: str, algorithms: list[str], paths: PathResolver) -> dict:
+    """
+    Load subjective evaluation data from Excel file for a specific run.
+
+    Args:
+        run_id: Run identifier
+        algorithms: List of algorithm names to match
+        paths: PathResolver instance for workspace-aware path resolution
+
+    Returns:
+        Dictionary mapping (product_id, algorithm) to subjective scores:
+        {
+            (product_id, algo): {
+                'subj_geo': float or None,  # Geometry score (0-1)
+                'subj_vf': float or None     # Visual fidelity score (0-1)
+            }
+        }
+    """
+    if not HAS_PANDAS:
+        return {}
+
+    # Construct path to subjective evaluation Excel file
+    excel_path = paths.runs_root / run_id / "Subjective evaluation.xlsx"
+
+    if not excel_path.exists():
+        return {}
+
+    try:
+        # Read the 'Average' sheet
+        df = pd.read_excel(excel_path, sheet_name='Average')
+
+        # Initialize result dictionary
+        data_map = {}
+
+        # Iterate through rows
+        for _, row in df.iterrows():
+            item_id = str(row.get('ID', '')).strip()
+            algo_from_excel = str(row.get('Algoritmo', '')).strip()
+            geo_score = row.get('Geometria', None)
+            vf_score = row.get('Fedelta visiva', None)
+
+            if not item_id or not algo_from_excel:
+                continue
+
+            # Try to match algorithm name
+            matched_algo = None
+            for algo in algorithms:
+                # Check exact match or substring match
+                if algo.lower() == algo_from_excel.lower() or algo_from_excel.lower() in algo.lower():
+                    matched_algo = algo
+                    break
+
+            if not matched_algo:
+                continue
+
+            # Try to extract product_id from item_id (format: "product_id_variant" or just "product_id")
+            parts = item_id.split('_')
+            matched_pid = parts[0] if parts else item_id
+
+            # Store data (convert from 0-100 to 0-1 scale if needed)
+            data_map[(matched_pid, matched_algo)] = {
+                'subj_geo': float(geo_score) / 100.0 if pd.notnull(geo_score) and geo_score != '' else None,
+                'subj_vf': float(vf_score) / 100.0 if pd.notnull(vf_score) and vf_score != '' else None
+            }
+
+        return data_map
+
+    except Exception as e:
+        # Silently fail if Excel loading fails
+        return {}
 
 
 # ---------------------------------------------------------------
@@ -190,6 +277,7 @@ def build_html_report(run_id: str | None, paths: PathResolver) -> Path:
     # Load and process generations data
     data = []
     run_ids = set()
+    algorithms_per_run = {}
 
     if not csv_path.exists():
         raise FileNotFoundError(f"Generations CSV not found: {csv_path}")
@@ -221,6 +309,11 @@ def build_html_report(run_id: str | None, paths: PathResolver) -> Path:
                 item_run_id = row.get('run_id', 'unknown_run')
                 run_ids.add(item_run_id)
 
+                algo = row.get('algo', 'Unknown')
+                if item_run_id not in algorithms_per_run:
+                    algorithms_per_run[item_run_id] = set()
+                algorithms_per_run[item_run_id].add(algo)
+
                 # Construct workspace-relative image paths with ../ prefix for reports subfolder
                 vf_artifacts_dir = row.get('vf_artifacts_dir', '').replace('\\', '/')
                 parts = vf_artifacts_dir.split('/')
@@ -235,15 +328,33 @@ def build_html_report(run_id: str | None, paths: PathResolver) -> Path:
                     'category_l1': row.get('category_l1', 'Uncategorized'),
                     'category_l2': row.get('category_l2', 'Uncategorized'),
                     'category_l3': row.get('category_l3', 'Uncategorized'),
-                    'algorithm': row.get('algo', 'Unknown'),
+                    'algorithm': algo,
                     'fscore': fscore,
                     'vfscore': vfscore,
                     'time': exec_time,
                     'gt_image': f"{base_img_path}/lpips_input_a_gt.png",
-                    'render_image': f"{base_img_path}/lpips_input_b_render.png"
+                    'render_image': f"{base_img_path}/lpips_input_b_render.png",
+                    'subj_geo': None,
+                    'subj_vf': None
                 })
             except ValueError:
                 continue
+
+    # Load subjective evaluation data for each run
+    subjective_data_per_run = {}
+    for rid in run_ids:
+        algos_list = list(algorithms_per_run.get(rid, []))
+        subjective_data_per_run[rid] = load_subjective_data(rid, algos_list, paths)
+
+    # Merge subjective data into main data
+    for item in data:
+        rid = item['run_id']
+        pid = item['id']
+        algo = item['algorithm']
+        subj_data = subjective_data_per_run.get(rid, {})
+        if (pid, algo) in subj_data:
+            item['subj_geo'] = subj_data[(pid, algo)]['subj_geo']
+            item['subj_vf'] = subj_data[(pid, algo)]['subj_vf']
 
     # Calculate statistics per run
     stats_per_run = {}
@@ -346,17 +457,21 @@ def _generate_html_template(json_data: str, json_items: str, json_run_ids: str, 
 
     <!-- Tabs -->
     <ul class="nav nav-tabs mb-4" id="reportTabs" role="tablist">
-        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#boxplot-pane">Box Plots</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#stats-pane">Statistiche</button></li>
-        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#sparse-pane">Confronto Algoritmi</button></li>
+        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#obj-boxplot-pane">Obiettivo: Box Plots</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#obj-stats-pane">Obiettivo: Statistiche</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#obj-sparse-pane">Obiettivo: Confronto</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#subj-boxplot-pane">Soggettivo: Box Plots</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#subj-stats-pane">Soggettivo: Statistiche</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#subj-sparse-pane">Soggettivo: Confronto</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#comparison-tab">Obiettivo vs Soggettivo</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#comparison-pane">Confronto Visivo</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#recap-pane">Riepilogo</button></li>
     </ul>
 
     <div class="tab-content">
 
-        <!-- Box Plots Section -->
-        <div class="tab-pane fade show active" id="boxplot-pane">
+        <!-- Obiettivo: Box Plots Section -->
+        <div class="tab-pane fade show active" id="obj-boxplot-pane">
             <div class="help-box">
                 <strong>Come leggere il Box Plot:</strong>
                 <ul class="mb-0 mt-1 ps-3">
@@ -388,8 +503,8 @@ def _generate_html_template(json_data: str, json_items: str, json_run_ids: str, 
             </div>
         </div>
 
-        <!-- Stats Section -->
-        <div class="tab-pane fade" id="stats-pane">
+        <!-- Obiettivo: Stats Section -->
+        <div class="tab-pane fade" id="obj-stats-pane">
             <div class="help-box">
                 <strong>Guida alla lettura delle Statistiche:</strong>
                 <ul class="mb-0 mt-1 ps-3">
@@ -438,8 +553,8 @@ def _generate_html_template(json_data: str, json_items: str, json_run_ids: str, 
             </div>
         </div>
 
-        <!-- Sparse Plots -->
-        <div class="tab-pane fade" id="sparse-pane">
+        <!-- Obiettivo: Sparse Plots -->
+        <div class="tab-pane fade" id="obj-sparse-pane">
             <div class="help-box">
                 <strong>Guida al Confronto Algoritmi:</strong>
                 <ul class="mb-0 mt-1 ps-3">
@@ -484,6 +599,143 @@ def _generate_html_template(json_data: str, json_items: str, json_run_ids: str, 
                                     <tbody></tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Soggettivo: Box Plots Section -->
+        <div class="tab-pane fade" id="subj-boxplot-pane">
+            <div class="help-box">
+                <strong>Valutazione Soggettiva:</strong>
+                <p class="mb-0">I dati soggettivi provengono dalle valutazioni umane caricate dal file Excel "Subjective evaluation.xlsx". Se non sono presenti dati soggettivi per il run selezionato, le visualizzazioni risulteranno vuote.</p>
+            </div>
+            <div class="row">
+                <div class="col-md-6 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header">Geometria Soggettiva per Categoria</div>
+                        <div class="card-body"><div id="subjGeoBoxPlot" style="height: 500px;"></div></div>
+                    </div>
+                </div>
+                <div class="col-md-6 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header">Fedelta Visiva Soggettiva per Categoria</div>
+                        <div class="card-body"><div id="subjVfBoxPlot" style="height: 500px;"></div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Soggettivo: Stats Section -->
+        <div class="tab-pane fade" id="subj-stats-pane">
+            <div class="help-box">
+                <strong>Statistiche Soggettive:</strong>
+                <p class="mb-0">Analisi statistica delle valutazioni umane. Le statistiche sono calcolate solo sugli elementi che hanno valutazioni soggettive disponibili.</p>
+            </div>
+            <div class="row">
+                <div class="col-12 mb-4">
+                    <div class="card">
+                        <div class="card-header">Statistiche Descrittive Soggettive (Media +- Dev.Std)</div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-bordered stats-table" id="subjDescStatsTable">
+                                    <thead><tr><th>Algoritmo</th><th>Geometria Soggettiva</th><th>Fedelta Visiva Soggettiva</th><th>Campioni</th></tr></thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">Significativita Pairwise (Mann-Whitney U) - Geometria Soggettiva</div>
+                        <div class="card-body">
+                            <div class="table-responsive"><table class="table table-bordered text-center" id="mwSubjGeoTable"></table></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">Significativita Pairwise (Mann-Whitney U) - Fedelta Visiva Soggettiva</div>
+                        <div class="card-body">
+                            <div class="table-responsive"><table class="table table-bordered text-center" id="mwSubjVfTable"></table></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Soggettivo: Sparse Plots -->
+        <div class="tab-pane fade" id="subj-sparse-pane">
+            <div class="help-box">
+                <strong>Confronto Algoritmi (Valutazioni Soggettive):</strong>
+                <p class="mb-0">Analisi della relazione tra geometria e fedelta visiva basata su valutazioni umane.</p>
+            </div>
+            <div class="row">
+                <div class="col-lg-6 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header">Distribuzione Punti (Geo Soggettiva vs VF Soggettiva)</div>
+                        <div class="card-body d-flex justify-content-center">
+                            <div id="subjSparsePlot" style="width: 100%; aspect-ratio: 1/1;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-6 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header">Centro di Massa Soggettivo</div>
+                        <div class="card-body d-flex justify-content-center">
+                            <div id="subjCenterOfMassPlot" style="width: 100%; aspect-ratio: 1/1;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header">Leaderboard Soggettivo (Distanza dall'Ideale [1.0, 1.0])</div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover" id="subjLeaderboardTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Posizione</th>
+                                            <th>Algoritmo</th>
+                                            <th>Distanza dall'Ideale</th>
+                                            <th>Geometria Soggettiva Media</th>
+                                            <th>VF Soggettiva Media</th>
+                                            <th>Campioni</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Obiettivo vs Soggettivo Comparison -->
+        <div class="tab-pane fade" id="comparison-tab">
+            <div class="help-box">
+                <strong>Correlazione Obiettivo vs Soggettivo:</strong>
+                <p class="mb-0">Analizza la correlazione tra metriche obiettive (FScore, VFScore) e valutazioni soggettive umane usando il coefficiente di Spearman.</p>
+            </div>
+            <div class="row">
+                <div class="col-lg-6 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header">Correlazione FScore vs Geometria Soggettiva</div>
+                        <div class="card-body">
+                            <div id="corrFScoreGeo" style="width: 100%; aspect-ratio: 1/1;"></div>
+                            <p class="text-center mt-2" id="corrFScoreGeoText"></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-6 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header">Correlazione VFScore vs Fedelta Visiva Soggettiva</div>
+                        <div class="card-body">
+                            <div id="corrVFScoreVf" style="width: 100%; aspect-ratio: 1/1;"></div>
+                            <p class="text-center mt-2" id="corrVFScoreVfText"></p>
                         </div>
                     </div>
                 </div>
@@ -541,13 +793,108 @@ def _generate_html_template(json_data: str, json_items: str, json_run_ids: str, 
     let runData = [];
     let filteredData = [];
 
+    // Spearman correlation calculation
+    function spearmanCorrelation(x, y) {{
+        if (x.length !== y.length || x.length === 0) return {{ rho: null, p: null }};
+
+        const n = x.length;
+        const rankX = getRanks(x);
+        const rankY = getRanks(y);
+
+        let sumD2 = 0;
+        for (let i = 0; i < n; i++) {{
+            const d = rankX[i] - rankY[i];
+            sumD2 += d * d;
+        }}
+
+        const rho = 1 - (6 * sumD2) / (n * (n * n - 1));
+
+        // Approximate p-value using t-distribution
+        const t = rho * Math.sqrt((n - 2) / (1 - rho * rho));
+        const p = 2 * (1 - tCDF(Math.abs(t), n - 2));
+
+        return {{ rho, p }};
+    }}
+
+    function getRanks(arr) {{
+        const sorted = arr.map((v, i) => ({{value: v, index: i}})).sort((a, b) => a.value - b.value);
+        const ranks = new Array(arr.length);
+        let i = 0;
+        while (i < arr.length) {{
+            let j = i;
+            while (j < arr.length - 1 && sorted[j].value === sorted[j + 1].value) j++;
+            const rank = (i + 1 + j + 1) / 2;
+            for (let k = i; k <= j; k++) ranks[sorted[k].index] = rank;
+            i = j + 1;
+        }}
+        return ranks;
+    }}
+
+    function tCDF(t, df) {{
+        // Approximate t-distribution CDF for p-value calculation
+        const x = df / (df + t * t);
+        return 1 - 0.5 * betaInc(df / 2, 0.5, x);
+    }}
+
+    function betaInc(a, b, x) {{
+        // Incomplete beta function approximation
+        if (x === 0) return 0;
+        if (x === 1) return 1;
+        const bt = Math.exp(gammaLn(a + b) - gammaLn(a) - gammaLn(b) + a * Math.log(x) + b * Math.log(1 - x));
+        if (x < (a + 1) / (a + b + 2)) return bt * betaCF(x, a, b) / a;
+        return 1 - bt * betaCF(1 - x, b, a) / b;
+    }}
+
+    function betaCF(x, a, b) {{
+        const maxIter = 100;
+        const eps = 3e-7;
+        const qab = a + b;
+        const qap = a + 1;
+        const qam = a - 1;
+        let c = 1;
+        let d = 1 - qab * x / qap;
+        if (Math.abs(d) < eps) d = eps;
+        d = 1 / d;
+        let h = d;
+        for (let m = 1; m <= maxIter; m++) {{
+            const m2 = 2 * m;
+            let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+            d = 1 + aa * d;
+            if (Math.abs(d) < eps) d = eps;
+            c = 1 + aa / c;
+            if (Math.abs(c) < eps) c = eps;
+            d = 1 / d;
+            h *= d * c;
+            aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+            d = 1 + aa * d;
+            if (Math.abs(d) < eps) d = eps;
+            c = 1 + aa / c;
+            if (Math.abs(c) < eps) c = eps;
+            d = 1 / d;
+            const del = d * c;
+            h *= del;
+            if (Math.abs(del - 1) < eps) break;
+        }}
+        return h;
+    }}
+
+    function gammaLn(x) {{
+        const cof = [76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+        let y = x;
+        let tmp = x + 5.5;
+        tmp -= (x + 0.5) * Math.log(tmp);
+        let ser = 1.000000000190015;
+        for (let j = 0; j < 6; j++) ser += cof[j] / ++y;
+        return -tmp + Math.log(2.5066282746310005 * ser / x);
+    }}
+
     document.addEventListener('DOMContentLoaded', () => {{
         initRunSelect();
         updateRunData();
 
         document.getElementById('runSelect').addEventListener('change', (e) => {{ currentRun = e.target.value; updateRunData(); }});
-        document.getElementById('groupSelect').addEventListener('change', (e) => {{ currentGroup = e.target.value; updatePlots(); }});
-        document.getElementById('outlierSwitch').addEventListener('change', (e) => {{ showOutliers = e.target.checked; updatePlots(); }});
+        document.getElementById('groupSelect').addEventListener('change', (e) => {{ currentGroup = e.target.value; updatePlots(); renderSubjectivePlots(); }});
+        document.getElementById('outlierSwitch').addEventListener('change', (e) => {{ showOutliers = e.target.checked; updatePlots(); renderSubjectivePlots(); }});
 
         document.getElementById('searchBox').addEventListener('input', (e) => {{
             const term = e.target.value.toLowerCase();
@@ -578,6 +925,9 @@ def _generate_html_template(json_data: str, json_items: str, json_run_ids: str, 
         document.getElementById('searchBox').value = '';
         updatePlots();
         renderStats();
+        renderSubjectivePlots();
+        renderSubjectiveStats();
+        renderCorrelation();
         renderComparison();
     }}
 
@@ -724,6 +1074,217 @@ def _generate_html_template(json_data: str, json_items: str, json_run_ids: str, 
 
         renderHeatmap('mwFscoreTable', 'fscore');
         renderHeatmap('mwVfscoreTable', 'vfscore');
+    }}
+
+    function renderSubjectivePlots() {{
+        const subjData = runData.filter(d => d.subj_geo !== null || d.subj_vf !== null);
+        if (subjData.length === 0) {{
+            // No subjective data available
+            Plotly.purge('subjGeoBoxPlot');
+            Plotly.purge('subjVfBoxPlot');
+            document.getElementById('subjGeoBoxPlot').innerHTML = '<p class="text-center text-muted">Nessun dato soggettivo disponibile per questo run.</p>';
+            document.getElementById('subjVfBoxPlot').innerHTML = '<p class="text-center text-muted">Nessun dato soggettivo disponibile per questo run.</p>';
+            return;
+        }}
+
+        const algorithms = [...new Set(subjData.map(d => d.algorithm))].sort();
+        const boxPoints = showOutliers ? 'outliers' : false;
+
+        const createSubjBoxTraces = (metric, name) => algorithms.map(algo => {{
+            const algoData = subjData.filter(d => d.algorithm === algo && d[metric] !== null);
+            return {{
+                y: algoData.map(d => d[metric]),
+                x: algoData.map(d => d[currentGroup]),
+                type: 'box',
+                name: algo,
+                boxpoints: boxPoints,
+                jitter: 0.3,
+                pointpos: 0
+            }};
+        }});
+
+        const layout = {{
+            boxmode: 'group',
+            margin: {{t: 50, b: 100}},
+            showlegend: true,
+            legend: {{orientation: 'h', y: -0.2}},
+            yaxis: {{range: [0, 1.05]}}
+        }};
+
+        const config = {{responsive: true}};
+
+        Plotly.newPlot('subjGeoBoxPlot', createSubjBoxTraces('subj_geo'), {{...layout, title: 'Geometria Soggettiva'}}, config);
+        Plotly.newPlot('subjVfBoxPlot', createSubjBoxTraces('subj_vf'), {{...layout, title: 'Fedelta Visiva Soggettiva'}}, config);
+
+        // Subjective sparse plots
+        const sparseTraces = algorithms.map(algo => {{
+            const algoData = subjData.filter(d => d.algorithm === algo && d.subj_geo !== null && d.subj_vf !== null);
+            return {{
+                x: algoData.map(d => d.subj_vf),
+                y: algoData.map(d => d.subj_geo),
+                mode: 'markers',
+                type: 'scatter',
+                name: algo,
+                text: algoData.map(d => d.name),
+                marker: {{size: 8, opacity: 0.7}}
+            }};
+        }});
+
+        const squareLayout = {{
+            xaxis: {{title: 'VF Soggettiva', range: [0, 1.05], constrain: 'domain'}},
+            yaxis: {{title: 'Geometria Soggettiva', range: [0, 1.05], scaleanchor: 'x', scaleratio: 1}},
+            margin: {{t: 60, b: 60, l: 60, r: 60}},
+            hovermode: 'closest',
+            autosize: true
+        }};
+
+        Plotly.newPlot('subjSparsePlot', sparseTraces, {{...squareLayout, title: 'Geo Sogg vs VF Sogg'}}, config);
+
+        // Subjective center of mass
+        const comData = algorithms.map(algo => {{
+            const algoData = subjData.filter(d => d.algorithm === algo && d.subj_geo !== null && d.subj_vf !== null);
+            if (algoData.length === 0) return null;
+            const meanGeo = algoData.reduce((sum, d) => sum + d.subj_geo, 0) / algoData.length;
+            const meanVf = algoData.reduce((sum, d) => sum + d.subj_vf, 0) / algoData.length;
+            return {{ algo, meanGeo, meanVf, count: algoData.length }};
+        }}).filter(d => d !== null);
+
+        const comTraces = comData.map(d => ({{
+            x: [d.meanVf],
+            y: [d.meanGeo],
+            mode: 'markers',
+            type: 'scatter',
+            name: d.algo,
+            text: [`${{d.algo}}<br>Geo: ${{d.meanGeo.toFixed(3)}}<br>VF: ${{d.meanVf.toFixed(3)}}<br>N: ${{d.count}}`],
+            marker: {{ size: Math.sqrt(d.count) * 3, opacity: 0.9, line: {{width: 1, color: 'black'}} }}
+        }}));
+
+        Plotly.newPlot('subjCenterOfMassPlot', comTraces, {{...squareLayout, title: 'Centro di Massa Soggettivo'}}, config);
+
+        // Subjective leaderboard
+        const leaderboardBody = document.querySelector('#subjLeaderboardTable tbody');
+        leaderboardBody.innerHTML = '';
+
+        const ranked = comData.map(d => {{
+            const dist = Math.sqrt(Math.pow(1 - d.meanGeo, 2) + Math.pow(1 - d.meanVf, 2));
+            return {{ ...d, dist }};
+        }}).sort((a, b) => a.dist - b.dist);
+
+        ranked.forEach((d, i) => {{
+            leaderboardBody.innerHTML += `<tr>
+                <td>${{i + 1}}</td>
+                <td><strong>${{d.algo}}</strong></td>
+                <td>${{d.dist.toFixed(4)}}</td>
+                <td>${{d.meanGeo.toFixed(4)}}</td>
+                <td>${{d.meanVf.toFixed(4)}}</td>
+                <td>${{d.count}}</td>
+            </tr>`;
+        }});
+    }}
+
+    function renderSubjectiveStats() {{
+        const subjData = runData.filter(d => d.subj_geo !== null || d.subj_vf !== null);
+        if (subjData.length === 0) return;
+
+        // Group by algorithm
+        const algos = {{}};
+        subjData.forEach(d => {{
+            if (!algos[d.algorithm]) algos[d.algorithm] = {{ subj_geo: [], subj_vf: [] }};
+            if (d.subj_geo !== null) algos[d.algorithm].subj_geo.push(d.subj_geo);
+            if (d.subj_vf !== null) algos[d.algorithm].subj_vf.push(d.subj_vf);
+        }});
+
+        const algoNames = Object.keys(algos).sort();
+
+        // Descriptive stats
+        const descBody = document.querySelector('#subjDescStatsTable tbody');
+        descBody.innerHTML = '';
+        algoNames.forEach(algo => {{
+            const geo = algos[algo].subj_geo;
+            const vf = algos[algo].subj_vf;
+            const geoMean = geo.length > 0 ? geo.reduce((a, b) => a + b) / geo.length : 0;
+            const vfMean = vf.length > 0 ? vf.reduce((a, b) => a + b) / vf.length : 0;
+            const geoStd = geo.length > 1 ? Math.sqrt(geo.reduce((sum, v) => sum + Math.pow(v - geoMean, 2), 0) / (geo.length - 1)) : 0;
+            const vfStd = vf.length > 1 ? Math.sqrt(vf.reduce((sum, v) => sum + Math.pow(v - vfMean, 2), 0) / (vf.length - 1)) : 0;
+            const count = Math.max(geo.length, vf.length);
+
+            descBody.innerHTML += `<tr>
+                <td>${{algo}}</td>
+                <td>${{geoMean.toFixed(3)}} +- ${{geoStd.toFixed(3)}}</td>
+                <td>${{vfMean.toFixed(3)}} +- ${{vfStd.toFixed(3)}}</td>
+                <td>${{count}}</td>
+            </tr>`;
+        }});
+
+        // Pairwise heatmaps (simplified Mann-Whitney U for subjective data)
+        // Note: Reusing the calculate_rank and mann_whitney_u functions from Python would require reimplementation
+        // For now, just show placeholders or simplified stats
+        document.getElementById('mwSubjGeoTable').innerHTML = '<p class="text-center text-muted">Statistiche pairwise non ancora implementate per dati soggettivi.</p>';
+        document.getElementById('mwSubjVfTable').innerHTML = '<p class="text-center text-muted">Statistiche pairwise non ancora implementate per dati soggettivi.</p>';
+    }}
+
+    function renderCorrelation() {{
+        const corrData = runData.filter(d =>
+            d.fscore !== null && d.vfscore !== null &&
+            d.subj_geo !== null && d.subj_vf !== null
+        );
+
+        if (corrData.length < 3) {{
+            // Not enough data for meaningful correlation
+            document.getElementById('corrFScoreGeo').innerHTML = '<p class="text-center text-muted">Dati insufficienti per il calcolo della correlazione (min 3 campioni).</p>';
+            document.getElementById('corrVFScoreVf').innerHTML = '<p class="text-center text-muted">Dati insufficienti per il calcolo della correlazione (min 3 campioni).</p>';
+            document.getElementById('corrFScoreGeoText').innerHTML = '';
+            document.getElementById('corrVFScoreVfText').innerHTML = '';
+            return;
+        }}
+
+        // FScore vs Subjective Geometry
+        const fscoreVals = corrData.map(d => d.fscore);
+        const subjGeoVals = corrData.map(d => d.subj_geo);
+        const corrFGeo = spearmanCorrelation(fscoreVals, subjGeoVals);
+
+        const traceFGeo = {{
+            x: fscoreVals,
+            y: subjGeoVals,
+            mode: 'markers',
+            type: 'scatter',
+            text: corrData.map(d => d.name),
+            marker: {{ size: 8, opacity: 0.6 }}
+        }};
+
+        Plotly.newPlot('corrFScoreGeo', [traceFGeo], {{
+            xaxis: {{ title: 'F-Score' }},
+            yaxis: {{ title: 'Geometria Soggettiva' }},
+            margin: {{ t: 40, b: 60, l: 60, r: 40 }}
+        }}, {{ responsive: true }});
+
+        document.getElementById('corrFScoreGeoText').innerHTML = corrFGeo.rho !== null
+            ? `<strong>Spearman rho:</strong> ${{corrFGeo.rho.toFixed(3)}} | <strong>p-value:</strong> ${{corrFGeo.p.toFixed(4)}}`
+            : 'Correlazione non calcolabile';
+
+        // VFScore vs Subjective VF
+        const vfscoreVals = corrData.map(d => d.vfscore);
+        const subjVfVals = corrData.map(d => d.subj_vf);
+        const corrVFVf = spearmanCorrelation(vfscoreVals, subjVfVals);
+
+        const traceVFVf = {{
+            x: vfscoreVals,
+            y: subjVfVals,
+            mode: 'markers',
+            type: 'scatter',
+            text: corrData.map(d => d.name),
+            marker: {{ size: 8, opacity: 0.6 }}
+        }};
+
+        Plotly.newPlot('corrVFScoreVf', [traceVFVf], {{
+            xaxis: {{ title: 'VF-Score' }},
+            yaxis: {{ title: 'Fedelta Visiva Soggettiva' }},
+            margin: {{ t: 40, b: 60, l: 60, r: 40 }}
+        }}, {{ responsive: true }});
+
+        document.getElementById('corrVFScoreVfText').innerHTML = corrVFVf.rho !== null
+            ? `<strong>Spearman rho:</strong> ${{corrVFVf.rho.toFixed(3)}} | <strong>p-value:</strong> ${{corrVFVf.p.toFixed(4)}}`
+            : 'Correlazione non calcolabile';
     }}
 
     function renderComparison() {{

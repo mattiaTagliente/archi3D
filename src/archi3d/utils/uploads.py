@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 # src/archi3d/utils/uploads.py
 from __future__ import annotations
 from pathlib import Path

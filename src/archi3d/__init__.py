@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 # archi3d/__init__.py
 """
 Archi3D: run-centric Image-to-3D testing harness.

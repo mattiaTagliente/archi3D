@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 # src/archi3d/db/catalog.py
 """
 Phase 1: Catalog Build

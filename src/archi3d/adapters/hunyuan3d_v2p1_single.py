@@ -1,3 +1,6 @@
+# Copyright (C) 2025 Francesca Falcone and Mattia Tagliente
+# All Rights Reserved
+
 # src/archi3d/adapters/hunyuan3d_v2p1_single.py
 from __future__ import annotations
 
